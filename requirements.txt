@@ -1,1 +1,5 @@
 torch
+pillow
+opencv-python
+numpy
+pandas

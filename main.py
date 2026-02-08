@@ -32,6 +32,33 @@ print(f"Global Embedding shape: {g_emb.shape}")  # (2, 1024)
 print(f"Box Embeddings shape:   {b_embs.shape}")  # (2, 3, 1024)
 print("Success!")
 
+
+# -----------------------------------------------------------
+# Тестовый пример использования UIED
+# -----------------------------------------------------------
+
+from box_aware_visual_encoder import Qwen2_5_BoxEncoder
+        
+device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+# Инициализация энкодера
+encoder = Qwen2_5_BoxEncoder(
+    img_size=224,
+    patch_size=14,
+    embed_dim=1024,
+    depth=12,
+    num_heads=16,
+    n_boxes=len(bboxes)  # количество боксов
+).to(device)
+        
+# Препроцессинг изображения (resize + нормализация)
+# ... (здесь нужна ваша логика препроцессинга)
+
+# Forward pass
+g_emb, b_embs = encoder(img_tensor, boxes_tensor.to(device))
+print(f"Global embedding: {g_emb.shape}")
+print(f"Box embeddings: {b_embs.shape}")
+
 # -----------------------------------------------------------
 # Тестовый пример использования VisualToTextEmbeddingProjector
 # -----------------------------------------------------------
