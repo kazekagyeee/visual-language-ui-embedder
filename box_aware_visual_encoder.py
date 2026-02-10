@@ -56,21 +56,30 @@ class Qwen2_5_2DRoPE(nn.Module):
         self.dim = dim  # head_dim
         self.base = base
         # Половина дима на высоту, половина на ширину
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim // 2, 2).float() / (dim // 2)))
+        # Для 2D RoPE нужно разделить head_dim пополам
+        half_dim = dim // 2
+        inv_freq = 1.0 / (base ** (torch.arange(0, half_dim, 2).float() / half_dim))
         self.register_buffer("inv_freq", inv_freq)
 
     def forward(self, grid_h, grid_w):
+        # Создаем эмбеддинги для каждой оси
+        # grid_h и grid_w имеют форму (L,) где L - количество позиций
         def get_emb(t):
+            # t: (L,), inv_freq: (half_dim//2,)
+            # out: (L, half_dim//2)
             out = torch.einsum("i,j->ij", t, self.inv_freq)
+            # Дублируем для sin и cos пар: (L, half_dim//2) -> (L, half_dim)
             return torch.cat((out, out), dim=-1)
 
-        emb_h = get_emb(grid_h)
-        emb_w = get_emb(grid_w)
-        # Собираем 2D: [height_embs, width_embs]
+        emb_h = get_emb(grid_h)  # (L, half_dim)
+        emb_w = get_emb(grid_w)  # (L, half_dim)
+        
+        # Собираем 2D: [height_embs, width_embs] -> (L, dim)
         combined = torch.cat([emb_h, emb_w], dim=-1)
 
-        cos = combined.cos().unsqueeze(0).unsqueeze(2)  # (1, L, 1, D)
-        sin = combined.sin().unsqueeze(0).unsqueeze(2)
+        # Форма для broadcasting с (B, num_heads, L, head_dim)
+        cos = combined.cos().unsqueeze(0).unsqueeze(1)  # (1, 1, L, dim)
+        sin = combined.sin().unsqueeze(0).unsqueeze(1)  # (1, 1, L, dim)
         return cos, sin
 
 

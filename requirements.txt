@@ -3,3 +3,5 @@ pillow
 opencv-python
 numpy
 pandas
+huggingface-hub
+safetensors
