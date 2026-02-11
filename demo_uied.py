@@ -28,7 +28,7 @@ def main():
     image = Image.open(image_path)
     
     # --- 3) Детекция bbox'ов ---
-    bboxes = detector.detect(image, max_dist=20)
+    bboxes = detector.detect(image, max_dist=1)
     
     print(f"✅ Найдено {len(bboxes)} UI компонентов")
     print("\n📦 Bbox'ы (нормализованные координаты [x1, y1, x2, y2]):")

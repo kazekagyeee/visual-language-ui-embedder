@@ -39,7 +39,8 @@ class Qwen2RotaryEmbedding(nn.Module):
         t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
-        return emb.cos()[None, :, None, :], emb.sin()[None, :, None, :]
+        # Output: (1, 1, S, D) to broadcast with (B, H, S, D)
+        return emb.cos()[None, None, :, :], emb.sin()[None, None, :, :]
 
 
 class Qwen2_5_Attention(nn.Module):
@@ -123,6 +124,9 @@ class HeadlessQwen2_5(nn.Module):
 
         # Генерируем 1D RoPE
         cos, sin = self.rotary_emb(x, seq_len=S)
+        # Cast to same dtype
+        cos = cos.to(dtype=x.dtype)
+        sin = sin.to(dtype=x.dtype)
 
         # Создаем Causal Mask для последовательности длиной 3
         # (Чтобы текст видел бокс и глобал, но бокс не видел текст)

@@ -35,7 +35,7 @@ class UIEDDetector:
             'remove-bar': True
         }
 
-    def detect(self, image: Image.Image, max_dist=20) -> List[List[float]]:
+    def detect(self, image: Image.Image, max_dist) -> List[List[float]]:
         """
         Запускает UIED и возвращает список bbox'ов в нормализованном формате
         
@@ -85,6 +85,8 @@ class UIEDDetector:
                 x2, y2 = comp["column_max"], comp["row_max"]
                 raw_boxes.append([x1, y1, x2, y2])
 
+            print(f"raw boxes detected: {len(raw_boxes)}")
+
             # --- 5) Объединяем рядом стоящие боксы ---
             merged_boxes = self._merge_boxes(raw_boxes, max_dist=max_dist)
 
@@ -114,7 +116,7 @@ class UIEDDetector:
 
         return dist < max_dist
 
-    def _merge_boxes(self, boxes, max_dist=20):
+    def _merge_boxes(self, boxes, max_dist):
         """Объединяет рядом стоящие боксы"""
         merged = True
         while merged:
