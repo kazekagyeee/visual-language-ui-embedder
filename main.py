@@ -142,7 +142,11 @@ def main():
     # Our BoxEncoder uses 'img_size=224'
 
     max_dist = 5 # Для слияния близких bbox
-    bboxes = detector.detect(image, max_dist=max_dist)
+    
+    # Debug output path
+    debug_bbox_path = os.path.join("debug", "uied_bbox_debug.png")
+    
+    bboxes = detector.detect(image, max_dist=max_dist, debug_output_path=debug_bbox_path)
     if not bboxes:
         print("[!] No boxes detected! Using full image box.")
         bboxes = [[0.0, 0.0, 1.0, 1.0]]

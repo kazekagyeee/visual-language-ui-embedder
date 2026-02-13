@@ -7,8 +7,8 @@ import os
 import json
 import tempfile
 from os.path import join as pjoin
-from typing import List
-from PIL import Image
+from typing import List, Optional
+from PIL import Image, ImageDraw
 
 from uied_cv import ip_region_proposal as ip
 
@@ -35,7 +35,7 @@ class UIEDDetector:
             'remove-bar': True
         }
 
-    def detect(self, image: Image.Image, max_dist) -> List[List[float]]:
+    def detect(self, image: Image.Image, max_dist, debug_output_path: Optional[str] = None) -> List[List[float]]:
         """
         Запускает UIED и возвращает список bbox'ов в нормализованном формате
         
@@ -89,6 +89,21 @@ class UIEDDetector:
 
             # --- 5) Объединяем рядом стоящие боксы ---
             merged_boxes = self._merge_boxes(raw_boxes, max_dist=max_dist)
+
+            # --- Debug Output ---
+            if debug_output_path:
+                try:
+                    debug_img = image.copy()
+                    draw = ImageDraw.Draw(debug_img)
+                    for box in merged_boxes:
+                        # Ensure coordinates are integers for drawing
+                        draw.rectangle([int(c) for c in box], outline="red", width=2)
+                    
+                    os.makedirs(os.path.dirname(debug_output_path), exist_ok=True)
+                    debug_img.save(debug_output_path)
+                    print(f"[DEBUG] Saved detected boxes to {debug_output_path}")
+                except Exception as e:
+                    print(f"[!] Failed to save debug image: {e}")
 
             # --- 6) Нормализуем координаты (0-1) ---
             normalized_boxes = []
