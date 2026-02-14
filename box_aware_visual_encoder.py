@@ -131,6 +131,19 @@ class Qwen2_5_ViTBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         return x
 
+class SpatialMergeAdapter(nn.Module):
+    """
+    Adapts 1280-dim features to 5120-dim to match Qwen2-VL Projector.
+    Naive implementation: Repeat 4 times (simulating 2x2 spatial merge).
+    """
+    def __init__(self, in_dim=1280, out_dim=5120):
+        super().__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        
+    def forward(self, x):
+        # x: (..., 1280) -> (..., 5120)
+        return x.repeat_interleave(4, dim=-1)
 
 # -----------------------------------------------------------
 # 4. Основной класс Энкодера
@@ -143,14 +156,13 @@ class Qwen2_5_BoxEncoder(nn.Module):
                  embed_dim=1280, # Qwen2-VL-7B default
                  depth=32, # Qwen2-VL-7B default
                  num_heads=16,
-                 intermediate_size=3420): # Qwen2-VL-7B default
+                 intermediate_size=3420, # Qwen2-VL-7B default
+                 use_learned_tokens=False): # Set to True for future training
         super().__init__()
-        self.img_size = img_size
         self.patch_size = patch_size
-        self.grid_size = img_size // patch_size
-        self.num_patches = self.grid_size ** 2
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        self.use_learned_tokens = use_learned_tokens
 
         # В Qwen2.5-VL входной патчинг через свертку (3D Convolution for temporal)
         # Typically kernel_size=(2, 14, 14), stride=(2, 14, 14)
@@ -162,10 +174,21 @@ class Qwen2_5_BoxEncoder(nn.Module):
             stride=(2, patch_size, patch_size)
         )
 
-        # Специальные токены
-        self.global_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        # Прототип для box-токена (будет размножен для каждого бокса)
-        self.box_token_prototype = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        # TODO: Learned tokens для будущего файнтюнинга
+        # Сейчас используем ROI pooling (use_learned_tokens=False)
+        # Чтобы использовать learned tokens:
+        #   1. Установить use_learned_tokens=True
+        #   2. Загрузить веса или обучить с нуля
+        #   3. Добавить в load_qwen_weights.py загрузку visual.global_token и visual.box_token_prototype
+        if use_learned_tokens:
+            self.global_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+            self.box_token_prototype = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        else:
+            self.global_token = None
+            self.box_token_prototype = None
+            
+        # Adapter для преобразования 1280 -> 5120 (только для ROI pooling режима)
+        self.adapter = SpatialMergeAdapter(embed_dim, 5120) if not use_learned_tokens else None
 
         # 2D RoPE модуль (применяется к head_dim)
         self.rope = Qwen2_5_2DRoPE(embed_dim // num_heads)
@@ -175,32 +198,33 @@ class Qwen2_5_BoxEncoder(nn.Module):
         ])
         self.norm_final = RMSNorm(embed_dim)
 
-    def _get_rope_embeddings(self, device, n_boxes):
-        gs = self.grid_size
+    def _get_rope_embeddings(self, device, n_boxes, h, w):
         # Сетка координат патчей
-        y, x = torch.meshgrid(torch.arange(gs), torch.arange(gs), indexing='ij')
+        y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
         y, x = y.flatten().float().to(device), x.flatten().float().to(device)
 
-        # Координаты для префикс-токенов (Global + Boxes) - ставим в 0 или центр
-        # Global (1) + Boxes (n_boxes)
-        prefix_len = 1 + n_boxes
-        y_prefix = torch.zeros(prefix_len, device=device)
-        x_prefix = torch.zeros(prefix_len, device=device)
+        if self.use_learned_tokens:
+            # Coordinates for prefix tokens (Global + Boxes)
+            prefix_len = 1 + n_boxes
+            y_prefix = torch.zeros(prefix_len, device=device)
+            x_prefix = torch.zeros(prefix_len, device=device)
+            return self.rope(torch.cat([y_prefix, y]), torch.cat([x_prefix, x]))
+        else:
+            # Only patches, no prefix tokens
+            return self.rope(y, x)
 
-        return self.rope(torch.cat([y_prefix, y]), torch.cat([x_prefix, x]))
-
-    def create_box_mask(self, boxes, B, device):
+    def create_box_mask(self, boxes, B, device, h, w):
         """
         Создает маску внимания.
         boxes: (B, N, 4) -> [x1, y1, x2, y2] в диапазоне [0, 1]
         """
         n_boxes = boxes.shape[1]
-        total_tokens = 1 + n_boxes + self.num_patches
+        num_patches = h * w
+        total_tokens = 1 + n_boxes + num_patches
         # По умолчанию разрешаем всё (Full Attention для патчей и глобального токена)
         mask = torch.ones((B, 1, total_tokens, total_tokens), device=device, dtype=torch.bool)
 
-        gs = self.grid_size
-        y_c, x_c = torch.meshgrid(torch.linspace(0, 1, gs), torch.linspace(0, 1, gs), indexing='ij')
+        y_c, x_c = torch.meshgrid(torch.linspace(0, 1, h), torch.linspace(0, 1, w), indexing='ij')
         y_c, x_c = y_c.flatten().to(device), x_c.flatten().to(device)
 
         patch_start = 1 + n_boxes
@@ -245,23 +269,35 @@ class Qwen2_5_BoxEncoder(nn.Module):
         # Flatten: (B, EmbedDim, 1, H_out, W_out) -> (B, EmbedDim, H_out*W_out)
         x = x.squeeze(2).flatten(2).transpose(1, 2)  # (B, M, D)
 
-        # 2. Concat tokens: [Global, Box_1...N, Patches...]
-        # Размножаем box_token_prototype
-        box_tokens = self.box_token_prototype.expand(B, n_boxes, -1)
-
-        tokens = torch.cat([
-            self.global_token.expand(B, -1, -1),
-            box_tokens,
-            x
-        ], dim=1)
+        # 2. Concat tokens (only if using learned tokens)
+        if self.use_learned_tokens:
+            box_tokens = self.box_token_prototype.expand(B, n_boxes, -1)
+            tokens = torch.cat([
+                self.global_token.expand(B, -1, -1),
+                box_tokens,
+                x
+            ], dim=1)
+        else:
+            # ROI Pooling mode: process only image patches
+            tokens = x
 
         # 3. Positional Info (RoPE & Mask)
-        rope_cos_sin = self._get_rope_embeddings(img.device, n_boxes)
-        # Cast RoPE to same dtype as input (e.g. bfloat16)
+        # Получаем размеры сетки из выхода свертки
+        # x до flatten был (B, EmbedDim, H_out, W_out)
+        # Но мы уже сделали flatten. Вернемся к шагу 1.
+        # patch_embed output shape: (B, EmbedDim, T, H_out, W_out) -> T=1 after pool
+        # Давайте вычислим h, w из исходного изображения
+        # stride=(2, 14, 14).
+        # H_out = H // 14, W_out = W // 14 (assuming H, W divisible by 14)
+        h_out = img.shape[2] // self.patch_size
+        w_out = img.shape[3] // self.patch_size
+        
+        rope_cos_sin = self._get_rope_embeddings(img.device, n_boxes, h_out, w_out)
         rc, rs = rope_cos_sin
         rope_cos_sin = (rc.to(dtype=img.dtype), rs.to(dtype=img.dtype))
         
-        mask = self.create_box_mask(boxes, B, img.device)
+        # Mask only for learned tokens mode
+        mask = self.create_box_mask(boxes, B, img.device, h_out, w_out) if self.use_learned_tokens else None
 
         # 4. Transformer Layers
         for blk in self.blocks:
@@ -269,8 +305,53 @@ class Qwen2_5_BoxEncoder(nn.Module):
 
         tokens = self.norm_final(tokens)
 
-        # 5. Split output
-        global_emb = tokens[:, 0]
-        box_embs = tokens[:, 1:1 + n_boxes]
+        # 5. Extract embeddings
+        if self.use_learned_tokens:
+            # Use learned tokens
+            global_emb = tokens[:, 0]  # (B, 1280)
+            box_embs = tokens[:, 1:1 + n_boxes]  # (B, N, 1280)
+        else:
+            # ROI Pooling from feature grid
+            feature_grid = tokens.view(B, h_out, w_out, self.embed_dim)
+            
+            # Global embedding: mean pool all patches
+            global_emb = tokens.mean(dim=1)  # (B, 1280)
+            
+            # Box embeddings: ROI pooling
+            box_embs_list = []
+            y_c, x_c = torch.meshgrid(
+                torch.linspace(0, 1, h_out, dtype=img.dtype), 
+                torch.linspace(0, 1, w_out, dtype=img.dtype), 
+                indexing='ij'
+            )
+            y_c, x_c = y_c.to(img.device), x_c.to(img.device)
+            
+            for i in range(n_boxes):
+                b = boxes[:, i, :]  # (B, 4)
+                b_x1 = b[:, 0].unsqueeze(-1).unsqueeze(-1)
+                b_y1 = b[:, 1].unsqueeze(-1).unsqueeze(-1)
+                b_x2 = b[:, 2].unsqueeze(-1).unsqueeze(-1)
+                b_y2 = b[:, 3].unsqueeze(-1).unsqueeze(-1)
+                
+                # Create mask for patches inside box
+                in_box_mask = (x_c >= b_x1) & (x_c <= b_x2) & (y_c >= b_y1) & (y_c <= b_y2)
+                
+                # Handle empty boxes
+                empty_mask = in_box_mask.sum(dim=(1,2)) == 0
+                if empty_mask.any():
+                    in_box_mask[empty_mask] = True  # Fallback to full image
+                    
+                # Mean pooling
+                mask_expanded = in_box_mask.unsqueeze(-1).to(dtype=feature_grid.dtype)
+                sum_features = (feature_grid * mask_expanded).sum(dim=(1, 2))
+                count = mask_expanded.sum(dim=(1, 2))
+                box_emb = sum_features / (count + 1e-6)
+                box_embs_list.append(box_emb)
+                
+            box_embs = torch.stack(box_embs_list, dim=1)  # (B, N, 1280)
+            
+            # Adapt dimensions 1280 -> 5120
+            global_emb = self.adapter(global_emb)
+            box_embs = self.adapter(box_embs)
 
         return global_emb, box_embs

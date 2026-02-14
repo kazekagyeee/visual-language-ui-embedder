@@ -182,6 +182,15 @@ def load_embedding_weights(embedding_module, state_dict):
     if "model.embed_tokens.weight" in state_dict:
         safe_load(embedding_module.weight, state_dict["model.embed_tokens.weight"], "model.embed_tokens.weight")
 
+# -----------------------------------------------------------
+# 5. LM Head Weights (Optional)
+# -----------------------------------------------------------
+
+def load_lm_head_weights(lm_head, state_dict):
+    print("[-] Loading LM Head weights...")
+    if "lm_head.weight" in state_dict:
+        safe_load(lm_head.weight, state_dict["lm_head.weight"], "lm_head.weight")
+
 
 
 # -----------------------------------------------------------
@@ -193,6 +202,7 @@ def load_all_weights(
     projector=None,
     headless_llm=None,
     token_embedding=None,
+    lm_head=None,
     model_name="Qwen/Qwen2.5-VL-7B-Instruct",
     cache_dir=None
 ):
@@ -229,6 +239,10 @@ def load_all_weights(
             # 4. Embeddings
             if token_embedding is not None:
                 load_embedding_weights(token_embedding, state_dict)
+                
+            # 5. LM Head
+            if lm_head is not None:
+                load_lm_head_weights(lm_head, state_dict)
 
             # Cleanup
             del state_dict

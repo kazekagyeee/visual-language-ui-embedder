@@ -4,6 +4,7 @@ from PIL import Image
 import json
 import os
 import shutil
+import time
 from transformers import AutoTokenizer
 
 from box_aware_visual_encoder import Qwen2_5_BoxEncoder
@@ -12,7 +13,31 @@ from headless_qwen_llm import HeadlessQwen2_5
 from uied_detector import UIEDDetector
 from load_qwen_weights import load_all_weights
 
+def smart_resize(image: Image.Image, patch_size: int = 14) -> Image.Image:
+    """
+    Resizes image to ensure dimensions are multiples of patch_size.
+    This prevents shape mismatch errors in ViT patch embedding.
+    """
+    w, h = image.size
+    
+    # Calculate new dimensions
+    new_w = (w // patch_size) * patch_size
+    new_h = (h // patch_size) * patch_size
+    
+    # Enforce minimum size if needed (e.g. 1 patch)
+    if new_w < patch_size: new_w = patch_size
+    if new_h < patch_size: new_h = patch_size
+    
+    if (new_w, new_h) != (w, h):
+        print(f"[*] Smart Resize: {w}x{h} -> {new_w}x{new_h}")
+        return image.resize((new_w, new_h), resample=Image.BICUBIC)
+    
+    return image
+
+
 def main():
+    start_total = time.time()
+    
     # -------------------------------------------------------------------------
     # 0. SETUP & CONFIG
     # -------------------------------------------------------------------------
@@ -24,36 +49,16 @@ def main():
     txt_path = r"input_images\image_20_2.txt"
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
-
-    # Model Config (Qwen2.5-VL-7B)
-    VIS_DIM = 3584 # Note: Qwen2.5-VL embeds are 3584? No wait.
-    # Checking specific config of Qwen2.5-VL-7B.
-    # "visual": { "depth": 32, "embed_dim": 1280, "num_heads": 16, "patch_size": 14 } -> Wait, for VL-7B-Instruct:
-    # Actually Qwen2-VL has varied visual dims.
-    # Qwen2-VL-7B Visual Encoder usually: embed_dim=3584 ? No.
-    # Let's check typical values. Qwen2-VL-7B uses a specific ViT.
-    # "hidden_size": 3584 (LLM), "visual_hidden_size": 3584?
-    # Actually for Qwen2.5-VL-7B:
-    # Visual Encoder: SigLIP-like?
-    # If I look at the weights I can know.
-    # visual.patch_embed.proj.weight: [1280, 1176, 14, 14] -> 1176 channels?
-    # visual.blocks.0.mlp.gate_proj.weight: [3420, 1280]?
-    #
-    # CORRECTION: Qwen2-VL-7B uses a dynamic resolution vision encoder based on Qwen-ViT.
-    # For this task, assuming standard config compatible with code.
-    # If the user code was generic:
-    # Qwen2.5-7B LLM hidden size is 3584.
-    # Visual encoder dim: typically 1280 (like in Qwen-VL) or 3584.
-    # Let's assume typical Qwen2.5-VL: visual_dim=1280, llm_dim=3584.
-    # If this is wrong, weight loading will crash on shape mismatch, which is good.
     
-    # Actually Qwen2-VL 7B keys:
-    # visual.patch_embed.proj.weight shape is likely (1280, 3*14*14 / temporal?, 2, 2).
-    # Since we are using a "BoxEncoder" which is a standard ViT here, I will set dims to match likely weights.
-    # If standard ViT: visual_dim=1280.
+    # Flags
+    DEBUG_DECODE_EMBEDDINGS = True
     
-    VIS_DIM = 1280 # Common for small/med ViTs in these models
-    LLM_DIM = 3584 # Qwen2.5-7B hidden size
+    SYSTEM_PROMPT = "You are a UI context describer assistant. You answer in russian."
+    CONTEXT_PROMPT = "Тебе нужно описать UI элемент в контексте основного изображения и его описания: первое - целое изображение UI, второе - сам описываемый компонент, а далее текст, который является контекстом к основному изображению: "
+    
+    # Vision Encoder outputs 5120-dim (after SpatialMergeAdapter)
+    VIS_DIM = 5120  # Box encoder output dim (1280 * 4)
+    LLM_DIM = 3584  # Qwen2.5-7B hidden size
     HEADS_VIS = 16 
     DEPTH_VIS = 32 # Qwen2-VL-7B model usually has deep vision/llm
     
@@ -75,12 +80,13 @@ def main():
     
     # 1.1 Visual Encoder
     box_encoder = Qwen2_5_BoxEncoder(
-        img_size=224, # Will be resized
+        img_size=224, # Will be resized dynamically
         patch_size=14,
-        embed_dim=VIS_DIM,
+        embed_dim=1280,  # Internal ViT dimension
         depth=DEPTH_VIS,
-        num_heads=HEADS_VIS
-    ).to(device) # BFloat16?
+        num_heads=HEADS_VIS,
+        use_learned_tokens=False  # Use ROI pooling (TODO: set True for future training)
+    ).to(device)
     
     # 1.2 Projector
     projector = VisualToTextEmbeddingProjector(
@@ -101,6 +107,16 @@ def main():
     if vocab_size < 151936: vocab_size = 152064 # Safety
     
     token_embedding = nn.Embedding(vocab_size, LLM_DIM).to(device)
+    
+    t_init = time.time()
+    print(f"  [Time] Model Initialization: {t_init - start_total:.2f}s")
+    
+    # 1.5 LM Head (Debug)
+    lm_head = None
+    if DEBUG_DECODE_EMBEDDINGS:
+        # Usually LM Head is just a Linear layer
+        lm_head = nn.Linear(LLM_DIM, vocab_size, bias=False).to(device)
+
 
     # -------------------------------------------------------------------------
     # 2. LOAD WEIGHTS
@@ -111,6 +127,8 @@ def main():
         projector = projector.bfloat16()
         headless_llm = headless_llm.bfloat16()
         token_embedding = token_embedding.bfloat16()
+        if lm_head is not None:
+             lm_head = lm_head.bfloat16()
         print("[*] Converted models to BFloat16")
     except Exception as e:
         print(f"[!] BFloat16 not supported? {e}. Using float32.")
@@ -121,6 +139,7 @@ def main():
             projector=projector,
             headless_llm=headless_llm,
             token_embedding=token_embedding,
+            lm_head=lm_head,
             model_name="Qwen/Qwen2.5-VL-7B-Instruct"
         )
     except Exception as e:
@@ -128,6 +147,9 @@ def main():
         # For debug purposes, we might continue with random weights if loading fails
         # but the user requested explicit weight usage.
         # return
+
+    t_load = time.time()
+    print(f"  [Time] Weight Loading: {t_load - t_init:.2f}s")
 
     # -------------------------------------------------------------------------
     # 3. PROCESS INPUTS
@@ -137,11 +159,11 @@ def main():
     # 3.1 Load & Detect UI
     detector = UIEDDetector()
     image = Image.open(img_path).convert("RGB")
-    image = image.resize((224, 224)) # Resizing for fixed size encoder input
-    # Note: Real Qwen2-VL handles dynamic aspect ratios, but BoxEncoder is fixed to 224x224 in code?
-    # Our BoxEncoder uses 'img_size=224'
+    
+    # Apply Smart Resize to align with patch grid
+    image = smart_resize(image, patch_size=14)
 
-    max_dist = 5 # Для слияния близких bbox
+    max_dist = 17 # Для слияния близких bbox
     
     # Debug output path
     debug_bbox_path = os.path.join("debug", "uied_bbox_debug.png")
@@ -157,7 +179,6 @@ def main():
     # Image: (1, 3, 224, 224)
     from torchvision import transforms
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) 
         # Standard ImageNet norm, or Qwen specific? Qwen usually just /255
@@ -174,20 +195,34 @@ def main():
     
     print(f"  [+] Text content: {text_content[:50]}...")
     
-    inputs = tokenizer(text_content, return_tensors="pt")
+    # Create Chat Template (Simplified for headless usage)
+    # <|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\n{text}<|im_end|>\n<|im_start|>assistant\n
+    prompt_parts = []
+    if SYSTEM_PROMPT:
+        prompt_parts.append(f"<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n")
+    
+    prompt_parts.append(f"<|im_start|>user\n{CONTEXT_PROMPT + text_content}<|im_end|>\n")
+    prompt_parts.append("<|im_start|>assistant\n")
+    
+    prompt_text = "".join(prompt_parts)
+    
+    print(f"  [+] Prompt text: {prompt_text[:50]}...")
+    
+    inputs = tokenizer(prompt_text, return_tensors="pt")
     input_ids = inputs.input_ids.to(device) # (1, Seq)
     
     # Get Text Embeddings
     # (1, Seq, LLM_DIM)
     text_emb = token_embedding(input_ids)
-    
-    # We need a single text vector for the Projector? 
-    # Projector signature: (global_emb, box_embs, text_emb)
-    # text_emb in `VisionToTextEmbeddingProjector` expects (B, Dim_T)
-    # The snippet says: "text_emb: (B, Dim_T) - Текстовый эмбеддинг"
-    # So we need to POOL or Select a token from the text sequence.
-    # Usually [EOS] or Mean pooling. Let's use Mean Pooling for now.
-    text_vec = text_emb.mean(dim=1) # (1, LLM_DIM)
+
+    # Use the LAST token for next-token prediction
+    # Logic: [Visuals] [Prompt_Tok_1 ... Prompt_Tok_N] -> Predict Next
+    # We pass the embedding of the *last* token of the prompt as the "Text Context".
+    # HeadlessLLM sees: [Box, Global, Text_Tok_N] and predicts State_(N+1)
+    text_vec = text_emb[:, -1, :] # (1, LLM_DIM)
+
+    t_process = time.time()
+    print(f"  [Time] Input Processing & Detection: {t_process - t_load:.2f}s")
 
     # -------------------------------------------------------------------------
     # 4. RUN PIPELINE
@@ -208,6 +243,9 @@ def main():
         output_embeddings = headless_llm(triples)
         
     print(f"  [+] Output Shape: {output_embeddings.shape}")
+
+    t_forward = time.time()
+    print(f"  [Time] Forward Pass: {t_forward - t_process:.2f}s")
     
     # -------------------------------------------------------------------------
     # 5. SAVE OUTPUT
@@ -230,6 +268,63 @@ def main():
         json.dump(out_list, f)
         
     print(f"[SUCCESS] Embeddings saved to {output_file}")
+    
+    # -------------------------------------------------------------------------
+    # 6. DEBUG DECODE
+    # -------------------------------------------------------------------------
+    if DEBUG_DECODE_EMBEDDINGS and lm_head is not None:
+        print("\n[*] Debug Decoding Embeddings...")
+        # output_embeddings: (B, N, LLM_DIM)
+        # We process the first batch item
+        emb_batch = output_embeddings[0] # (N, LLM_DIM)
+        
+        print(f"  [DEBUG] Embeddings Stats: Min={emb_batch.min().item():.4f}, Max={emb_batch.max().item():.4f}, Mean={emb_batch.mean().item():.4f}")
+        
+        debug_out_list = []
+        
+        with torch.no_grad():
+             logits = lm_head(emb_batch) # (N, Vocab)
+             print(f"  [DEBUG] Logits Stats: Min={logits.min().item():.4f}, Max={logits.max().item():.4f}, Mean={logits.mean().item():.4f}")
+             
+             # Get top-5 predictions
+             probs = torch.softmax(logits, dim=-1)
+             top_probs, top_ids = torch.topk(probs, 5, dim=-1)
+             
+             token_ids = torch.argmax(logits, dim=-1) # (N,)
+             
+             # Decode with special tokens to see what's actually predicted
+             decoded_texts = tokenizer.batch_decode(token_ids.unsqueeze(-1), skip_special_tokens=False)
+             
+             for i, text in enumerate(decoded_texts):
+                 # Corresponding bbox from bboxes list
+                 bbox = bboxes[i] if i < len(bboxes) else None
+                 
+                 top_k_info = []
+                 for k in range(5):
+                     tid = top_ids[i, k].item()
+                     tprob = top_probs[i, k].item()
+                     ttext = tokenizer.decode([tid])
+                     top_k_info.append(f"{ttext} ({tprob:.2f})")
+                 
+                 debug_out_list.append({
+                     "bbox": bbox,
+                     "decoded_token": text,
+                     "token_id": token_ids[i].item(),
+                     "top_5": top_k_info
+                 })
+                 
+             print(f"  [DEBUG] First decoded token: '{decoded_texts[0]}' (ID: {token_ids[0].item()})")
+                 
+        debug_file = os.path.join("debug", "decoded_embeddings.json")
+        os.makedirs("debug", exist_ok=True)
+        with open(debug_file, "w", encoding='utf-8') as f:
+            json.dump(debug_out_list, f, indent=2, ensure_ascii=False)
+            
+        print(f"[DEBUG] Decoded texts saved to {debug_file}")
+
+    t_end = time.time()
+    print(f"  [Time] Output Saving & Debug: {t_end - t_forward:.2f}s")
+    print(f"[*] Total Execution Time: {t_end - start_total:.2f}s")
 
 
 if __name__ == "__main__":
