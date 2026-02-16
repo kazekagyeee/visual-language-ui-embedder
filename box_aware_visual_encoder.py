@@ -51,35 +51,57 @@ def apply_rotary_pos_emb(q, k, cos, sin):
 
 
 class Qwen2_5_2DRoPE(nn.Module):
-    def __init__(self, dim, base=10000.0):
+    def __init__(self, dim, base=10000.0, use_mrope=False):
         super().__init__()
         self.dim = dim  # head_dim
         self.base = base
-        # Половина дима на высоту, половина на ширину
-        # Для 2D RoPE нужно разделить head_dim пополам
-        half_dim = dim // 2
-        inv_freq = 1.0 / (base ** (torch.arange(0, half_dim, 2).float() / half_dim))
+        self.use_mrope = use_mrope  # M-RoPE (3D) vs 2D-RoPE
+        
+        if use_mrope:
+            # M-RoPE: temporal, height, width (each gets dim/3)
+            third_dim = dim // 3
+            inv_freq = 1.0 / (base ** (torch.arange(0, third_dim, 2).float() / third_dim))
+        else:
+            # 2D-RoPE: height, width (each gets dim/2)
+            half_dim = dim // 2
+            inv_freq = 1.0 / (base ** (torch.arange(0, half_dim, 2).float() / half_dim))
         self.register_buffer("inv_freq", inv_freq)
 
-    def forward(self, grid_h, grid_w):
-        # Создаем эмбеддинги для каждой оси
-        # grid_h и grid_w имеют форму (L,) где L - количество позиций
-        def get_emb(t):
-            # t: (L,), inv_freq: (half_dim//2,)
-            # out: (L, half_dim//2)
-            out = torch.einsum("i,j->ij", t, self.inv_freq)
-            # Дублируем для sin и cos пар: (L, half_dim//2) -> (L, half_dim)
-            return torch.cat((out, out), dim=-1)
+    def forward(self, *coords):
+        """
+        Args:
+            coords: Either (h, w) for 2D-RoPE or (t, h, w) for M-RoPE
+        """
+        if self.use_mrope:
+            # M-RoPE: temporal, height, width
+            assert len(coords) == 3, "M-RoPE requires (t, h, w)"
+            grid_t, grid_h, grid_w = coords
+            
+            def get_emb(t):
+                out = torch.einsum("i,j->ij", t, self.inv_freq)
+                return torch.cat((out, out), dim=-1)
+            
+            emb_t = get_emb(grid_t)
+            emb_h = get_emb(grid_h)
+            emb_w = get_emb(grid_w)
+            
+            combined = torch.cat([emb_t, emb_h, emb_w], dim=-1)
+        else:
+            # 2D-RoPE: height, width
+            assert len(coords) == 2, "2D-RoPE requires (h, w)"
+            grid_h, grid_w = coords
+            
+            def get_emb(t):
+                out = torch.einsum("i,j->ij", t, self.inv_freq)
+                return torch.cat((out, out), dim=-1)
 
-        emb_h = get_emb(grid_h)  # (L, half_dim)
-        emb_w = get_emb(grid_w)  # (L, half_dim)
-        
-        # Собираем 2D: [height_embs, width_embs] -> (L, dim)
-        combined = torch.cat([emb_h, emb_w], dim=-1)
+            emb_h = get_emb(grid_h)
+            emb_w = get_emb(grid_w)
+            
+            combined = torch.cat([emb_h, emb_w], dim=-1)
 
-        # Форма для broadcasting с (B, num_heads, L, head_dim)
-        cos = combined.cos().unsqueeze(0).unsqueeze(1)  # (1, 1, L, dim)
-        sin = combined.sin().unsqueeze(0).unsqueeze(1)  # (1, 1, L, dim)
+        cos = combined.cos().unsqueeze(0).unsqueeze(1)
+        sin = combined.sin().unsqueeze(0).unsqueeze(1)
         return cos, sin
 
 
@@ -131,19 +153,43 @@ class Qwen2_5_ViTBlock(nn.Module):
         x = x + self.mlp(self.norm2(x))
         return x
 
-class SpatialMergeAdapter(nn.Module):
+class Qwen2VLSpatialMerge(nn.Module):
     """
-    Adapts 1280-dim features to 5120-dim to match Qwen2-VL Projector.
-    Naive implementation: Repeat 4 times (simulating 2x2 spatial merge).
+    Implements Qwen2.5-VL spatial merge: 2×2 grouping + MLP.
+    Converts (H, W, 1280) → (H/2, W/2, 3584)
     """
-    def __init__(self, in_dim=1280, out_dim=5120):
+    def __init__(self, in_dim=1280, out_dim=3584):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         
-    def forward(self, x):
-        # x: (..., 1280) -> (..., 5120)
-        return x.repeat_interleave(4, dim=-1)
+        # MLP as in Qwen2.5-VL: 5120 (4*1280) → 3584 → 3584
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim * 4, out_dim, bias=True),
+            nn.GELU(),
+            nn.Linear(out_dim, out_dim, bias=True)
+        )
+        
+    def forward(self, feature_grid):
+        """
+        Args:
+            feature_grid: (B, H, W, D) where D=1280
+        Returns:
+            merged_grid: (B, H/2, W/2, out_dim) where out_dim=3584
+        """
+        B, H, W, D = feature_grid.shape
+        
+        # Ensure H and W are even
+        assert H % 2 == 0 and W % 2 == 0, f"Height {H} and Width {W} must be even for 2×2 grouping"
+        
+        # 2×2 grouping: (B, H, W, D) → (B, H//2, 2, W//2, 2, D)
+        grouped = feature_grid.view(B, H//2, 2, W//2, 2, D)
+        
+        # Concatenate neighbors: (B, H//2, W//2, 2, 2, D) → (B, H//2, W//2, 4*D)
+        merged = grouped.permute(0, 1, 3, 2, 4, 5).reshape(B, H//2, W//2, 4*D)
+        
+        # MLP projection
+        return self.mlp(merged)  # (B, H//2, W//2, out_dim)
 
 # -----------------------------------------------------------
 # 4. Основной класс Энкодера
@@ -157,12 +203,14 @@ class Qwen2_5_BoxEncoder(nn.Module):
                  depth=32, # Qwen2-VL-7B default
                  num_heads=16,
                  intermediate_size=3420, # Qwen2-VL-7B default
-                 use_learned_tokens=False): # Set to True for future training
+                 use_learned_tokens=False, # Set to True for future training
+                 use_mrope=False): # Set to True to use M-RoPE (3D) instead of 2D-RoPE
         super().__init__()
         self.patch_size = patch_size
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.use_learned_tokens = use_learned_tokens
+        self.use_mrope = use_mrope
 
         # В Qwen2.5-VL входной патчинг через свертку (3D Convolution for temporal)
         # Typically kernel_size=(2, 14, 14), stride=(2, 14, 14)
@@ -187,11 +235,13 @@ class Qwen2_5_BoxEncoder(nn.Module):
             self.global_token = None
             self.box_token_prototype = None
             
-        # Adapter для преобразования 1280 -> 5120 (только для ROI pooling режима)
-        self.adapter = SpatialMergeAdapter(embed_dim, 5120) if not use_learned_tokens else None
+        # Spatial Merge: применяется ДО ROI pooling к полному grid
+        # 1280 → 3584 (Qwen2.5-VL architecture)
+        self.spatial_merger = Qwen2VLSpatialMerge(embed_dim, 3584) if not use_learned_tokens else None
 
         # 2D RoPE модуль (применяется к head_dim)
-        self.rope = Qwen2_5_2DRoPE(embed_dim // num_heads)
+        # use_mrope=True для M-RoPE (temporal, height, width)
+        self.rope = Qwen2_5_2DRoPE(embed_dim // num_heads, use_mrope=use_mrope)
 
         self.blocks = nn.ModuleList([
             Qwen2_5_ViTBlock(embed_dim, num_heads, intermediate_size) for _ in range(depth)
@@ -203,15 +253,28 @@ class Qwen2_5_BoxEncoder(nn.Module):
         y, x = torch.meshgrid(torch.arange(h), torch.arange(w), indexing='ij')
         y, x = y.flatten().float().to(device), x.flatten().float().to(device)
 
-        if self.use_learned_tokens:
-            # Coordinates for prefix tokens (Global + Boxes)
-            prefix_len = 1 + n_boxes
-            y_prefix = torch.zeros(prefix_len, device=device)
-            x_prefix = torch.zeros(prefix_len, device=device)
-            return self.rope(torch.cat([y_prefix, y]), torch.cat([x_prefix, x]))
+        if self.use_mrope:
+            # M-RoPE: add temporal dimension (0 for static images)
+            t = torch.zeros_like(y)
+            
+            if self.use_learned_tokens:
+                # Prefix tokens get temporal=0
+                prefix_len = 1 + n_boxes
+                t_prefix = torch.zeros(prefix_len, device=device)
+                y_prefix = torch.zeros(prefix_len, device=device)
+                x_prefix = torch.zeros(prefix_len, device=device)
+                return self.rope(torch.cat([t_prefix, t]), torch.cat([y_prefix, y]), torch.cat([x_prefix, x]))
+            else:
+                return self.rope(t, y, x)
         else:
-            # Only patches, no prefix tokens
-            return self.rope(y, x)
+            # 2D-RoPE
+            if self.use_learned_tokens:
+                prefix_len = 1 + n_boxes
+                y_prefix = torch.zeros(prefix_len, device=device)
+                x_prefix = torch.zeros(prefix_len, device=device)
+                return self.rope(torch.cat([y_prefix, y]), torch.cat([x_prefix, x]))
+            else:
+                return self.rope(y, x)
 
     def create_box_mask(self, boxes, B, device, h, w):
         """
@@ -312,16 +375,20 @@ class Qwen2_5_BoxEncoder(nn.Module):
             box_embs = tokens[:, 1:1 + n_boxes]  # (B, N, 1280)
         else:
             # ROI Pooling from feature grid
-            feature_grid = tokens.view(B, h_out, w_out, self.embed_dim)
+            feature_grid = tokens.view(B, h_out, w_out, self.embed_dim)  # (B, H, W, 1280)
             
-            # Global embedding: mean pool all patches
-            global_emb = tokens.mean(dim=1)  # (B, 1280)
+            # === CRITICAL: Spatial Merge ДО ROI pooling ===
+            merged_grid = self.spatial_merger(feature_grid)  # (B, H/2, W/2, 3584)
+            B, H_merged, W_merged, D_merged = merged_grid.shape
             
-            # Box embeddings: ROI pooling
+            # Global embedding: mean pool all merged patches
+            global_emb = merged_grid.view(B, -1, D_merged).mean(dim=1)  # (B, 3584)
+            
+            # Box embeddings: ROI pooling on MERGED grid
             box_embs_list = []
             y_c, x_c = torch.meshgrid(
-                torch.linspace(0, 1, h_out, dtype=img.dtype), 
-                torch.linspace(0, 1, w_out, dtype=img.dtype), 
+                torch.linspace(0, 1, H_merged, dtype=img.dtype), 
+                torch.linspace(0, 1, W_merged, dtype=img.dtype), 
                 indexing='ij'
             )
             y_c, x_c = y_c.to(img.device), x_c.to(img.device)
@@ -341,17 +408,15 @@ class Qwen2_5_BoxEncoder(nn.Module):
                 if empty_mask.any():
                     in_box_mask[empty_mask] = True  # Fallback to full image
                     
-                # Mean pooling
-                mask_expanded = in_box_mask.unsqueeze(-1).to(dtype=feature_grid.dtype)
-                sum_features = (feature_grid * mask_expanded).sum(dim=(1, 2))
+                # Mean pooling on merged grid
+                mask_expanded = in_box_mask.unsqueeze(-1).to(dtype=merged_grid.dtype)
+                sum_features = (merged_grid * mask_expanded).sum(dim=(1, 2))
                 count = mask_expanded.sum(dim=(1, 2))
-                box_emb = sum_features / (count + 1e-6)
+                box_emb = sum_features / (count + 1e-6)  # (B, 3584)
                 box_embs_list.append(box_emb)
                 
-            box_embs = torch.stack(box_embs_list, dim=1)  # (B, N, 1280)
+            box_embs = torch.stack(box_embs_list, dim=1)  # (B, N, 3584)
             
-            # Adapt dimensions 1280 -> 5120
-            global_emb = self.adapter(global_emb)
-            box_embs = self.adapter(box_embs)
+            # NO adapter needed - spatial merge already gives 3584
 
         return global_emb, box_embs

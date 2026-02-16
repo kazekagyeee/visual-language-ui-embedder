@@ -56,8 +56,8 @@ def main():
     SYSTEM_PROMPT = "You are a UI context describer assistant. You answer in russian."
     CONTEXT_PROMPT = "Тебе нужно описать UI элемент в контексте основного изображения и его описания: первое - целое изображение UI, второе - сам описываемый компонент, а далее текст, который является контекстом к основному изображению: "
     
-    # Vision Encoder outputs 5120-dim (after SpatialMergeAdapter)
-    VIS_DIM = 5120  # Box encoder output dim (1280 * 4)
+    # Vision Encoder outputs 3584-dim (after Qwen2VLSpatialMerge)
+    VIS_DIM = 3584  # Spatial merge output (2×2 grouping + MLP)
     LLM_DIM = 3584  # Qwen2.5-7B hidden size
     HEADS_VIS = 16 
     DEPTH_VIS = 32 # Qwen2-VL-7B model usually has deep vision/llm
@@ -161,7 +161,8 @@ def main():
     image = Image.open(img_path).convert("RGB")
     
     # Apply Smart Resize to align with patch grid
-    image = smart_resize(image, patch_size=14)
+    # Qwen2.5-VL uses 2×2 spatial merge → need multiple of 28 (14 × 2)
+    image = smart_resize(image, patch_size=28)
 
     max_dist = 17 # Для слияния близких bbox
     
@@ -215,11 +216,10 @@ def main():
     # (1, Seq, LLM_DIM)
     text_emb = token_embedding(input_ids)
 
-    # Use the LAST token for next-token prediction
-    # Logic: [Visuals] [Prompt_Tok_1 ... Prompt_Tok_N] -> Predict Next
-    # We pass the embedding of the *last* token of the prompt as the "Text Context".
-    # HeadlessLLM sees: [Box, Global, Text_Tok_N] and predicts State_(N+1)
-    text_vec = text_emb[:, -1, :] # (1, LLM_DIM)
+    # Use MEAN POOLING for semantic representation (better for RAG)
+    # Last token is for generation, mean is for retrieval
+    #text_vec = text_emb.mean(dim=1)  # (1, LLM_DIM)
+    text_vec = text_emb[:, -1, :]
 
     t_process = time.time()
     print(f"  [Time] Input Processing & Detection: {t_process - t_load:.2f}s")
@@ -270,57 +270,100 @@ def main():
     print(f"[SUCCESS] Embeddings saved to {output_file}")
     
     # -------------------------------------------------------------------------
-    # 6. DEBUG DECODE
+    # 6. DEBUG DECODE - Using full generative model
     # -------------------------------------------------------------------------
-    if DEBUG_DECODE_EMBEDDINGS and lm_head is not None:
-        print("\n[*] Debug Decoding Embeddings...")
-        # output_embeddings: (B, N, LLM_DIM)
-        # We process the first batch item
-        emb_batch = output_embeddings[0] # (N, LLM_DIM)
+    if DEBUG_DECODE_EMBEDDINGS:
+        print("\\n[*] Debug: Loading full Qwen2.5-VL model for generation...")
         
-        print(f"  [DEBUG] Embeddings Stats: Min={emb_batch.min().item():.4f}, Max={emb_batch.max().item():.4f}, Mean={emb_batch.mean().item():.4f}")
-        
-        debug_out_list = []
-        
-        with torch.no_grad():
-             logits = lm_head(emb_batch) # (N, Vocab)
-             print(f"  [DEBUG] Logits Stats: Min={logits.min().item():.4f}, Max={logits.max().item():.4f}, Mean={logits.mean().item():.4f}")
-             
-             # Get top-5 predictions
-             probs = torch.softmax(logits, dim=-1)
-             top_probs, top_ids = torch.topk(probs, 5, dim=-1)
-             
-             token_ids = torch.argmax(logits, dim=-1) # (N,)
-             
-             # Decode with special tokens to see what's actually predicted
-             decoded_texts = tokenizer.batch_decode(token_ids.unsqueeze(-1), skip_special_tokens=False)
-             
-             for i, text in enumerate(decoded_texts):
-                 # Corresponding bbox from bboxes list
-                 bbox = bboxes[i] if i < len(bboxes) else None
-                 
-                 top_k_info = []
-                 for k in range(5):
-                     tid = top_ids[i, k].item()
-                     tprob = top_probs[i, k].item()
-                     ttext = tokenizer.decode([tid])
-                     top_k_info.append(f"{ttext} ({tprob:.2f})")
-                 
-                 debug_out_list.append({
-                     "bbox": bbox,
-                     "decoded_token": text,
-                     "token_id": token_ids[i].item(),
-                     "top_5": top_k_info
-                 })
-                 
-             print(f"  [DEBUG] First decoded token: '{decoded_texts[0]}' (ID: {token_ids[0].item()})")
-                 
-        debug_file = os.path.join("debug", "decoded_embeddings.json")
-        os.makedirs("debug", exist_ok=True)
-        with open(debug_file, "w", encoding='utf-8') as f:
-            json.dump(debug_out_list, f, indent=2, ensure_ascii=False)
+        try:
+            from transformers import Qwen2VLForConditionalGeneration
             
-        print(f"[DEBUG] Decoded texts saved to {debug_file}")
+            # Load full model (this will cache)
+            full_model = Qwen2VLForConditionalGeneration.from_pretrained(
+                "Qwen/Qwen2.5-VL-7B-Instruct",
+                torch_dtype=torch.bfloat16,
+                device_map=device,
+                trust_remote_code=True
+            )
+            full_model.eval()
+            
+            print("  [+] Full model loaded successfully")
+            
+            # Decode embeddings using the full model
+            emb_batch = output_embeddings[0]  # (N, LLM_DIM)
+            print(f"  [DEBUG] Embeddings Stats: Min={emb_batch.min().item():.4f}, Max={emb_batch.max().item():.4f}, Mean={emb_batch.mean().item():.4f}")
+            
+            debug_out_list = []
+            max_new_tokens = 200
+            
+            with torch.no_grad():
+                for idx in range(emb_batch.shape[0]):
+                    # Create full context: [text_prompt_embeddings] + [UI_component_embedding]
+                    # text_emb shape: (1, Seq, LLM_DIM)  
+                    # emb_batch[idx] shape: (LLM_DIM,)
+                    
+                    current_emb = emb_batch[idx:idx+1].unsqueeze(1)  # (1, 1, LLM_DIM)
+                    
+                    # Concatenate text prompt with UI component embedding
+                    full_context = torch.cat([text_emb, current_emb], dim=1)  # (1, Seq+1, LLM_DIM)
+                    
+                    print(f"  [DEBUG] Component {idx}: Context shape = {full_context.shape}")
+                    
+                    # Generate from embeddings with full context
+                    outputs = full_model.generate(
+                        inputs_embeds=full_context,
+                        max_new_tokens=max_new_tokens,
+                        temperature=0.7,
+                        do_sample=True,
+                        top_p=0.9,
+                        eos_token_id=tokenizer.eos_token_id,
+                        pad_token_id=tokenizer.pad_token_id
+                    )
+                    
+                    # Decode
+                    decoded_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    
+                    # Analysis: What would be the top-5 first tokens from this embedding?
+                    if lm_head is not None:
+                        first_logits = lm_head(emb_batch[idx:idx+1])
+                        first_probs = torch.softmax(first_logits, dim=-1)
+                        top_probs, top_ids = torch.topk(first_probs[0], 5)
+                        
+                        top_k_info = []
+                        for k in range(5):
+                            tid = top_ids[k].item()
+                            tprob = top_probs[k].item()
+                            ttext = tokenizer.decode([tid])
+                            top_k_info.append(f"{ttext} ({tprob:.2f})")
+                    else:
+                        top_k_info = []
+                    
+                    bbox = bboxes[idx] if idx < len(bboxes) else None
+                    debug_out_list.append({
+                        "bbox": bbox,
+                        "generated_text": decoded_text,
+                        "num_tokens": len(outputs[0]),
+                        "first_token_id": outputs[0][0].item() if len(outputs[0]) > 0 else None,
+                        "top_5_first": top_k_info
+                    })
+                    
+                    if idx < 3:
+                        print(f"  [Component {idx}] Generated: {decoded_text[:100]}...")
+            
+            debug_file = os.path.join("debug", "decoded_embeddings.json")
+            os.makedirs("debug", exist_ok=True)
+            with open(debug_file, "w", encoding='utf-8') as f:
+                json.dump(debug_out_list, f, indent=2, ensure_ascii=False)
+                
+            print(f"[DEBUG] Decoded texts saved to {debug_file}")
+            
+            # Cleanup to free memory
+            del full_model
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            print(f"[!] Failed to load full model for generation: {e}")
+            print(f"    Skipping debug decoding.")
 
     t_end = time.time()
     print(f"  [Time] Output Saving & Debug: {t_end - t_forward:.2f}s")
