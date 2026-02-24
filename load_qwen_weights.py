@@ -109,23 +109,25 @@ def load_vit_weights(box_encoder, state_dict):
     if "visual.ln_post.weight" in state_dict:
         safe_load(box_encoder.norm_final.weight, state_dict["visual.ln_post.weight"], "visual.ln_post")
 
+    # 4. Spatial Merger (visual.merger) — 2×2 grouping MLP
+    # Keys: visual.merger.mlp.0.weight/bias, visual.merger.mlp.2.weight/bias
+    if box_encoder.spatial_merger is not None:
+        m = box_encoder.spatial_merger.mlp
+        if "visual.merger.mlp.0.weight" in state_dict:
+            safe_load(m[0].weight, state_dict["visual.merger.mlp.0.weight"], "merger.mlp.0.weight")
+        if "visual.merger.mlp.0.bias" in state_dict:
+            safe_load(m[0].bias, state_dict["visual.merger.mlp.0.bias"], "merger.mlp.0.bias")
+        if "visual.merger.mlp.2.weight" in state_dict:
+            safe_load(m[2].weight, state_dict["visual.merger.mlp.2.weight"], "merger.mlp.2.weight")
+        if "visual.merger.mlp.2.bias" in state_dict:
+            safe_load(m[2].bias, state_dict["visual.merger.mlp.2.bias"], "merger.mlp.2.bias")
+        print("  [+] Loaded spatial merger weights")
+
 
 # -----------------------------------------------------------
-# 2. Vision Projector Weights
+# 2. Vision Projector Weights (DEPRECATED — merger is now loaded inside load_vit_weights)
 # -----------------------------------------------------------
-
-def load_vision_projector_weights_from_dict(projector, state_dict):
-    print("[-] Loading Vision Projector weights...")
-    
-    def load_w(attr, key):
-         if key in state_dict:
-             safe_load(attr, state_dict[key], key)
-
-    load_w(projector.vision_projector[0].weight, "visual.merger.mlp.0.weight")
-    load_w(projector.vision_projector[0].bias, "visual.merger.mlp.0.bias")
-    
-    load_w(projector.vision_projector[2].weight, "visual.merger.mlp.2.weight")
-    load_w(projector.vision_projector[2].bias, "visual.merger.mlp.2.bias")
+# visual.merger weights are handled in load_vit_weights → box_encoder.spatial_merger
 
 
 # -----------------------------------------------------------
@@ -199,7 +201,6 @@ def load_lm_head_weights(lm_head, state_dict):
 
 def load_all_weights(
     box_encoder=None,
-    projector=None,
     headless_llm=None,
     token_embedding=None,
     lm_head=None,
@@ -224,15 +225,11 @@ def load_all_weights(
             file_path = hf_hub_download(repo_id=model_name, filename=filename, cache_dir=cache_dir)
             state_dict = load_file(file_path)
             
-            # 1. ViT
+            # 1. ViT + spatial merger (visual.merger weights loaded inside)
             if box_encoder is not None:
                 load_vit_weights(box_encoder, state_dict)
                 
-            # 2. Projector
-            if projector is not None:
-                load_vision_projector_weights_from_dict(projector, state_dict)
-                
-            # 3. LLM
+            # 2. LLM
             if headless_llm is not None:
                 load_llm_weights(headless_llm, state_dict)
 

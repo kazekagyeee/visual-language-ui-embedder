@@ -130,7 +130,7 @@ class HeadlessQwen2_5(nn.Module):
 
         # Создаем Causal Mask для последовательности длиной 3
         # (Чтобы текст видел бокс и глобал, но бокс не видел текст)
-        mask = torch.tril(torch.ones(S, S, device=x.device)).view(1, 1, S, S)
+        mask = torch.tril(torch.ones(S, S, device=x.device, dtype=torch.bool)).view(1, 1, S, S)
 
         for layer in self.layers:
             x = layer(x, mask=mask, rope_cos_sin=(cos, sin))
