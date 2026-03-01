@@ -196,11 +196,13 @@ def main():
     # (1, Seq, LLM_DIM)
     text_emb = token_embedding(input_ids)
 
-    # Use MEAN POOLING for semantic representation (better for RAG)
-    # Last token is for generation, mean is for retrieval
-
-    text_vec = text_emb.mean(dim=1)  # (1, LLM_DIM)
-    #text_vec = text_emb[:, -1, :]
+    # Debug: verify text embedding dim matches LLM hidden size (3584 for Qwen2.5-7B)
+    LLM_DIM = 3584
+    assert text_emb.shape[-1] == LLM_DIM, (
+        f"[DIM MISMATCH] text_emb dim={text_emb.shape[-1]} != LLM_DIM={LLM_DIM}. "
+        f"Token embedding table may have wrong hidden size."
+    )
+    print(f"  [Debug] text_emb shape: {text_emb.shape}  ✓ dim matches LLM_DIM={LLM_DIM}")
 
     t_process = time.time()
     print(f"  [Time] Input Processing & Detection: {t_process - t_load:.2f}s")
@@ -213,19 +215,25 @@ def main():
     with torch.no_grad():
         # Step 1: Visual Encoding
         # box_encoder includes visual.merger (spatial merge MLP)
-        # g_emb: (B, LLM_DIM=3584), b_embs: (B, N, LLM_DIM=3584)
-        g_emb, b_embs = box_encoder(img_tensor, boxes_tensor)
+        # g_seq: (1, H*W, 3584) full image sequence
+        # b_seqs: list of (1, N_box_patches, 3584) sequences
+        g_seq, b_seqs = box_encoder(img_tensor, boxes_tensor)
         
-        # Step 2: Assemble triples [Box_i, Global, Text] for each box
-        # All are already in LLM_DIM space — no separate projector needed
-        B, N, D = b_embs.shape
-        v_global_expanded = g_emb.unsqueeze(1).expand(-1, N, -1)   # (B, N, D)
-        t_expanded = text_vec.unsqueeze(1).expand(-1, N, -1)        # (B, N, D)
-        triples = torch.stack([b_embs, v_global_expanded, t_expanded], dim=2)  # (B, N, 3, D)
+        # Step 2: Assemble sequences [Global_Seq, Box_Seq, Text_Seq] for each box
+        # We need a list of sequences to pass to Headless LLM because length varies per box.
+        seqs_list = []
         
-        # Step 3: LLM Refinement
-        # fused: (B, N, LLM_DIM)
-        output_embeddings = headless_llm(triples)
+        # text_emb is (1, S_text, 3584) — using the full text token sequence!
+        # No mean pooling here anymore, text is treated as a sequence.
+        for b_seq in b_seqs:
+            # Concat along sequence dimension (dim=1)
+            # Resulting shape: (1, N_global + N_bbox + N_text, 3584)
+            combined_seq = torch.cat([g_seq, b_seq, text_emb], dim=1)
+            seqs_list.append(combined_seq)
+            
+        # Step 3: LLM Refinement & Pooling
+        # output_embeddings: (1, N_boxes, 3584)
+        output_embeddings = headless_llm(seqs_list)
         
     print(f"  [+] Output Shape: {output_embeddings.shape}")
 
@@ -268,7 +276,7 @@ def main():
         emb_normalized = torch.nn.functional.normalize(emb_batch, p=2, dim=1)
         
         # Also normalize text embedding for comparison
-        text_vec_normalized = torch.nn.functional.normalize(text_vec, p=2, dim=1)
+        text_vec_normalized = torch.nn.functional.normalize(text_emb.mean(dim=1), p=2, dim=1)
         
         # 1. Component-to-Component Similarity Matrix
         # Shape: (N, N) where N is number of components

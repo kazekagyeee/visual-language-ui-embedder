@@ -118,25 +118,47 @@ class HeadlessQwen2_5(nn.Module):
             base=config['rope_theta']
         )
 
-    def forward(self, triples):
-        B, N, S, D = triples.shape
-        x = triples.view(B * N, S, D)
+    def forward(self, seqs_list):
+        """
+        seqs_list: list of tensors of shape (1, S_i, D) representing the sequence for each bbox.
+                   We process them sequentially here to avoid complex padding/attention masks
+                   for different lengths, since we are doing this for single inferences.
+        Returns:
+            Tensor of shape (1, N_boxes, D) containing the mean-pooled embeddings.
+        """
+        pooled_outputs = []
+        
+        for x_seq in seqs_list:
+            # x_seq is (1, S, D)
+            B, S, D = x_seq.shape
+            
+            # Генерируем 1D RoPE
+            cos, sin = self.rotary_emb(x_seq, seq_len=S)
+            # Cast to same dtype
+            cos = cos.to(dtype=x_seq.dtype)
+            sin = sin.to(dtype=x_seq.dtype)
 
-        # Генерируем 1D RoPE
-        cos, sin = self.rotary_emb(x, seq_len=S)
-        # Cast to same dtype
-        cos = cos.to(dtype=x.dtype)
-        sin = sin.to(dtype=x.dtype)
+            # Создаем Causal Mask для последовательности
+            mask = torch.tril(torch.ones(S, S, device=x_seq.device, dtype=torch.bool)).view(1, 1, S, S)
 
-        # Создаем Causal Mask для последовательности длиной 3
-        # (Чтобы текст видел бокс и глобал, но бокс не видел текст)
-        mask = torch.tril(torch.ones(S, S, device=x.device, dtype=torch.bool)).view(1, 1, S, S)
+            for layer in self.layers:
+                # В нашей кастомной реализации Qwen2_5_Attention мы должны применять 
+                # слои к (B, S, D). В нашем случае B=1 (обрабатываем по одному seq)
+                x_seq = layer(x_seq, mask=mask, rope_cos_sin=(cos, sin))
 
-        for layer in self.layers:
-            x = layer(x, mask=mask, rope_cos_sin=(cos, sin))
+            x_seq = self.norm(x_seq)
 
-        x = self.norm(x)
-
-        # Возвращаем эмбеддинг последнего токена (текстового),
-        # обогащенного визуальным контекстом бокса
-        return x[:, -1, :].view(B, N, D)
+            # --- Target Embedding for Vector Similarity (RAG) ---
+            # Mean pooling over a length ~300+ sequence (mostly visual patches) 
+            # tends to wash out the specific details, resulting in ~0.99 cosine similarity.
+            # Instead, we take the LAST token's embedding. Due to the causal or bidirectional 
+            # attention, the last token (which is the last token of the text prompt) 
+            # has "seen" the entire image and bbox context. This is standard practice 
+            # in causal LMs for embedding extraction.
+            # TODO: Если в будущем потребуется генерация текста — возвращать всю последовательность.
+            #pooled_emb = x_seq.mean(dim=1)  # (1, 3584) - я сильно сомневаюсь в том что насрал гемини, но дам ему шанс
+            pooled_emb = x_seq[:, -1, :]  # (1, 3584)
+            pooled_outputs.append(pooled_emb)
+            
+        # (1, N_boxes, D)
+        return torch.stack(pooled_outputs, dim=1)

@@ -346,8 +346,6 @@ class Qwen2_5_BoxEncoder(nn.Module):
 
         # 3. Positional Info (RoPE & Mask)
         # Получаем размеры сетки из выхода свертки
-        # x до flatten был (B, EmbedDim, H_out, W_out)
-        # Но мы уже сделали flatten. Вернемся к шагу 1.
         # patch_embed output shape: (B, EmbedDim, T, H_out, W_out) -> T=1 after pool
         # Давайте вычислим h, w из исходного изображения
         # stride=(2, 14, 14).
@@ -381,42 +379,64 @@ class Qwen2_5_BoxEncoder(nn.Module):
             merged_grid = self.spatial_merger(feature_grid)  # (B, H/2, W/2, 3584)
             B, H_merged, W_merged, D_merged = merged_grid.shape
             
-            # Global embedding: mean pool all merged patches
-            global_emb = merged_grid.view(B, -1, D_merged).mean(dim=1)  # (B, 3584)
+            # Global embedding: Sequence of all merged patches.
+            # This is the full image representation in LLM space.
+            global_seq = merged_grid.view(B, -1, D_merged)  # (B, H_merged*W_merged, 3584)
             
-            # Box embeddings: ROI pooling on MERGED grid
-            box_embs_list = []
-            y_c, x_c = torch.meshgrid(
-                torch.linspace(0, 1, H_merged, dtype=img.dtype), 
-                torch.linspace(0, 1, W_merged, dtype=img.dtype), 
-                indexing='ij'
-            )
-            y_c, x_c = y_c.to(img.device), x_c.to(img.device)
-            
+            # Box embeddings: Extract patches inside each box WITHOUT pooling.
+            # Use PATCH BOUNDARY INTERSECTION instead of center-point comparison.
+            # This ensures that even small bboxes (narrower than one patch) still
+            # capture at least the overlapping patch(es).
+            box_seqs_list = []
+
+            # Patch boundary coordinates in normalized [0, 1] space.
+            # Patch (i, j) covers: x in [j/W_m, (j+1)/W_m], y in [i/H_m, (i+1)/H_m]
+            col_idx = torch.arange(W_merged, dtype=img.dtype, device=img.device)
+            row_idx = torch.arange(H_merged, dtype=img.dtype, device=img.device)
+
+            # Left/right edges of each column (shape: W_merged)
+            px1_cols = col_idx / W_merged
+            px2_cols = (col_idx + 1) / W_merged
+
+            # Top/bottom edges of each row (shape: H_merged)
+            py1_rows = row_idx / H_merged
+            py2_rows = (row_idx + 1) / H_merged
+
+            # Expand to (H_merged, W_merged) grids
+            px1 = px1_cols.unsqueeze(0).expand(H_merged, -1)  # (H, W)
+            px2 = px2_cols.unsqueeze(0).expand(H_merged, -1)
+            py1 = py1_rows.unsqueeze(1).expand(-1, W_merged)  # (H, W)
+            py2 = py2_rows.unsqueeze(1).expand(-1, W_merged)
+
+            n_fallbacks = 0
             for i in range(n_boxes):
-                b = boxes[:, i, :]  # (B, 4)
-                b_x1 = b[:, 0].unsqueeze(-1).unsqueeze(-1)
-                b_y1 = b[:, 1].unsqueeze(-1).unsqueeze(-1)
-                b_x2 = b[:, 2].unsqueeze(-1).unsqueeze(-1)
-                b_y2 = b[:, 3].unsqueeze(-1).unsqueeze(-1)
+                b = boxes[:, i, :]  # (B, 4), assuming B=1
+
+                b_x1 = b[0, 0]
+                b_y1 = b[0, 1]
+                b_x2 = b[0, 2]
+                b_y2 = b[0, 3]
+
+                # Intersection test: patch overlaps bbox iff
+                #   patch_left < bbox_right  AND  patch_right > bbox_left  (and same for Y)
+                in_box_mask = (px1 < b_x2) & (px2 > b_x1) & (py1 < b_y2) & (py2 > b_y1)
+
+                # Extract patches
+                if in_box_mask.sum() == 0:
+                    # Fallback to full image sequence if box is empty/invalid
+                    print(f"  [Debug][Fallback] Box {i}: bbox=({b[0,0]:.3f},{b[0,1]:.3f},{b[0,2]:.3f},{b[0,3]:.3f}) "
+                          f"covers 0 merged patches (min patch size ~{14*2}px). Using global_seq.")
+                    n_fallbacks += 1
+                    box_seq = global_seq[0] # (H_merged*W_merged, 3584)
+                else:
+                    # merged_grid is (B, H, W, D). Extract for B=0.
+                    box_seq = merged_grid[0][in_box_mask] # (N_patches_in_box, 3584)
                 
-                # Create mask for patches inside box
-                in_box_mask = (x_c >= b_x1) & (x_c <= b_x2) & (y_c >= b_y1) & (y_c <= b_y2)
-                
-                # Handle empty boxes
-                empty_mask = in_box_mask.sum(dim=(1,2)) == 0
-                if empty_mask.any():
-                    in_box_mask[empty_mask] = True  # Fallback to full image
-                    
-                # Mean pooling on merged grid
-                mask_expanded = in_box_mask.unsqueeze(-1).to(dtype=merged_grid.dtype)
-                sum_features = (merged_grid * mask_expanded).sum(dim=(1, 2))
-                count = mask_expanded.sum(dim=(1, 2))
-                box_emb = sum_features / (count + 1e-6)  # (B, 3584)
-                box_embs_list.append(box_emb)
-                
-            box_embs = torch.stack(box_embs_list, dim=1)  # (B, N, 3584)
+                # We return a list of sequences (since they have different lengths)
+                # We add the batch dimension back: (1, N_patches_in_box, 3584)
+                box_seqs_list.append(box_seq.unsqueeze(0))
             
+            print(f"  [Debug] Fallback summary: {n_fallbacks}/{n_boxes} boxes used global_seq fallback.")
             # NO adapter needed - spatial merge already gives 3584
 
-        return global_emb, box_embs
+        return global_seq, box_seqs_list

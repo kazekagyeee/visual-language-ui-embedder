@@ -54,8 +54,8 @@ python main.py
 ```
 
 **Входные данные:**
-- `input_images/image_20_2.png` - изображение UI
-- `input_images/image_20_2.txt` - текстовое описание
+- `input_images/image.png` - изображение UI
+- `input_images/image.txt` - текстовое описание
 
 **Выходные данные:**
 - `output/embeddings.json` - финальные эмбеддинги (N, 3584)
