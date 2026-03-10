@@ -156,7 +156,6 @@ class HeadlessQwen2_5(nn.Module):
             # has "seen" the entire image and bbox context. This is standard practice 
             # in causal LMs for embedding extraction.
             # TODO: Если в будущем потребуется генерация текста — возвращать всю последовательность.
-            #pooled_emb = x_seq.mean(dim=1)  # (1, 3584) - я сильно сомневаюсь в том что насрал гемини, но дам ему шанс
             pooled_emb = x_seq[:, -1, :]  # (1, 3584)
             pooled_outputs.append(pooled_emb)
             
