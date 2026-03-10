@@ -47,39 +47,62 @@ Input Image (dynamic resolution)
 pip install -r requirements.txt
 ```
 
-### Запуск
+### Запуск как standalone скрипт
 
-```python
+```bash
 python main.py
 ```
 
-**Входные данные:**
-- `input_images/image.png` - изображение UI
-- `input_images/image.txt` - текстовое описание
+**Входные данные (по умолчанию):**
+- `input_images/image_20_2.png` - изображение UI
+- `input_images/image_20_2.txt` - текстовое описание
 
 **Выходные данные:**
-- `output/embeddings.json` - финальные эмбеддинги (N, 3584)
+- `output/embeddings.json` - словарь с форматом `[tuple(bbox)] = embedding`
 - `debug/uied_bbox_debug.png` - визуализация детекций
-- `debug/decoded_embeddings.json` - debug декодинг (опционально)
+- `debug/embedding_similarities.json` - анализ косинусного сходства компонентов
 
-### Конфигурация
+### Использование как модели в других проектах
 
-В `main.py`:
+Вы можете легко импортировать пайплайн и использовать его программно в своих приложениях.
 
 ```python
-# Системный промпт
-SYSTEM_PROMPT = "You are a UI context describer assistant."
+from main import UIEmbedderPipeline
+from config import UIEmbedderConfig
+from PIL import Image
 
-# Контекстный промпт
-CONTEXT_PROMPT = "Описание задачи..."
+# 1. (Опционально) Переопределение конфигурации
+config = UIEmbedderConfig(
+    device="cuda", # если хватает VRAM
+    debug_decode_embeddings=False # отключить дебаг для скорости
+)
 
-# Режим работы
-use_learned_tokens = False  # True для обучаемых токенов
-use_mrope = False           # True для M-RoPE (3D)
+# 2. Инициализация пайплайна (загружает веса)
+pipeline = UIEmbedderPipeline(config)
 
-# Debug
-DEBUG_DECODE_EMBEDDINGS = True  # Декодирование через LM Head
+# 3. Подготовка входных данных
+image = Image.open("path/to/my/ui_screenshot.png").convert("RGB")
+text_context = "Текст описывающий контекст экрана"
+
+# 4. Запуск генерации эмбеддингов
+# Получаем словарь: ключи - координаты (x1, y1, x2, y2), значения - эмбеддинги (list of floats)
+embeddings_dict = pipeline.process(image, text_context)
+
+for bbox, embedding in embeddings_dict.items():
+    print(f"Component at {bbox}: {len(embedding)}-dimensional vector")
 ```
+
+### Конфигурация (`config.py`)
+
+Все настраиваемые параметры вынесены в отдельный dataclass `UIEmbedderConfig`. Основные параметры:
+
+- `device`: `"cpu"` или `"cuda"`
+- `system_prompt` и `context_prompt`: промпты для LLM
+- `llm_dim`, `heads_vis`, `depth_vis`: параметры архитектуры (под Qwen2.5-VL-7B)
+- `model_name`: `"Qwen/Qwen2.5-VL-7B-Instruct"` (откуда скачивать веса)
+- `img_size`, `patch_size_encoder`, `patch_size_resize`: настройки обработки изображений
+- `max_dist`: параметр uied детектора для склеивания близких боксов
+- `debug_decode_embeddings`: включение/выключение анализа сходства (анализ замедляет работу)
 
 ## 📁 Структура проекта
 
@@ -117,13 +140,13 @@ for seg in segments:
 ### 2. Поиск
 
 ```python
-# Энкодим запрос
+# Подготовка эмбеддинга запроса (используем токенизатор и эмбеддинги из pipeline)
 query = "кнопка войти"
-query_ids = tokenizer(query, return_tensors="pt").input_ids
-query_emb = token_embedding(query_ids).mean(dim=1)  # Mean pooling
+query_ids = pipeline.tokenizer(query, return_tensors="pt").input_ids.to(pipeline.device)
+query_emb = pipeline.token_embedding(query_ids).mean(dim=1)  # Mean pooling
 
 # Поиск по cosine similarity
-# results = vector_db.search(query_emb, top_k=5)
+# results = vector_db.search(query_emb.cpu().numpy(), top_k=5)
 ```
 
 ## ⚠️ Важные замечания
