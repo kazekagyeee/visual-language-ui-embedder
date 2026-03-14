@@ -128,7 +128,7 @@ for bbox, embedding in embeddings_dict.items():
 # Сохраняем эмбеддинги в векторную БД
 import json
 
-with open("output/embeddings.json") as f:
+with open("output/embeddings_new.json") as f:
     segments = json.load(f)
 
 for seg in segments:

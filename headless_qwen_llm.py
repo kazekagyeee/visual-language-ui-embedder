@@ -118,46 +118,69 @@ class HeadlessQwen2_5(nn.Module):
             base=config['rope_theta']
         )
 
-    def forward(self, seqs_list):
+    def forward(self, seqs_list, s_prefix: int = 0,
+                s_box_starts: list = None, s_box_ends: list = None):
         """
-        seqs_list: list of tensors of shape (1, S_i, D) representing the sequence for each bbox.
-                   We process them sequentially here to avoid complex padding/attention masks
-                   for different lengths, since we are doing this for single inferences.
+        seqs_list:    list of (1, S_i, D) tensors, one per bbox.
+                      Expected layout: [g_summary(1) | box_patches(N_b) | text+EOS(T)]
+        s_prefix:     Number of leading tokens that form the bidirectional prefix
+                      (g_summary tokens). Pass 0 for pure causal (legacy).
+        s_box_starts: list of ints — start position of box patches in each sequence.
+        s_box_ends:   list of ints — end position (exclusive) of box patches.
+                      When provided, embedding = mean(LLM_output[s_box_start:s_box_end]).
+                      Falls back to last-token (EOS) when not provided.
         Returns:
-            Tensor of shape (1, N_boxes, D) containing the mean-pooled embeddings.
+            Tensor of shape (1, N_boxes, D) — one embedding per bbox.
         """
         pooled_outputs = []
-        
-        for x_seq in seqs_list:
-            # x_seq is (1, S, D)
+
+        for idx, x_seq in enumerate(seqs_list):
             B, S, D = x_seq.shape
-            
-            # Генерируем 1D RoPE
+
+            # 1D RoPE
             cos, sin = self.rotary_emb(x_seq, seq_len=S)
-            # Cast to same dtype
             cos = cos.to(dtype=x_seq.dtype)
             sin = sin.to(dtype=x_seq.dtype)
 
-            # Создаем Causal Mask для последовательности
-            mask = torch.tril(torch.ones(S, S, device=x_seq.device, dtype=torch.bool)).view(1, 1, S, S)
+            # --- Hybrid attention mask ---
+            # [g_summary prefix (P)] → bidirectional
+            # [box + text (R)]       → causal, full access to prefix
+            if s_prefix > 0 and s_prefix < S:
+                P = s_prefix
+                R = S - P
+                mask = torch.zeros(S, S, device=x_seq.device, dtype=torch.bool)
+                mask[:P, :P] = True                                                # prefix: bidirectional
+                mask[P:, :P] = True                                                # suffix sees prefix
+                mask[P:, P:] = torch.tril(torch.ones(R, R, device=x_seq.device, dtype=torch.bool))
+            else:
+                mask = torch.tril(torch.ones(S, S, device=x_seq.device, dtype=torch.bool))
+
+            mask = mask.view(1, 1, S, S)
 
             for layer in self.layers:
-                # В нашей кастомной реализации Qwen2_5_Attention мы должны применять 
-                # слои к (B, S, D). В нашем случае B=1 (обрабатываем по одному seq)
                 x_seq = layer(x_seq, mask=mask, rope_cos_sin=(cos, sin))
 
             x_seq = self.norm(x_seq)
 
-            # --- Target Embedding for Vector Similarity (RAG) ---
-            # Mean pooling over a length ~300+ sequence (mostly visual patches) 
-            # tends to wash out the specific details, resulting in ~0.99 cosine similarity.
-            # Instead, we take the LAST token's embedding. Due to the causal or bidirectional 
-            # attention, the last token (which is the last token of the text prompt) 
-            # has "seen" the entire image and bbox context. This is standard practice 
-            # in causal LMs for embedding extraction.
-            # TODO: Если в будущем потребуется генерация текста — возвращать всю последовательность.
-            pooled_emb = x_seq[:, -1, :]  # (1, 3584)
+            # --- Pooling strategy ---
+            # Fix 2: mean-pool the box-patch output positions.
+            # These positions carry box-specific signal enriched by the LLM through
+            # cross-attention to the global summary and text tokens.
+            # The EOS "last token" approach keeps seeing 95%+ identical shared context.
+            if (s_box_starts is not None and s_box_ends is not None
+                    and idx < len(s_box_starts) and idx < len(s_box_ends)):
+                bs = s_box_starts[idx]
+                be = s_box_ends[idx]
+                if be > bs:
+                    pooled_emb = x_seq[:, bs:be, :].mean(dim=1)  # (1, D)
+                else:
+                    # Degenerate: fallback to EOS
+                    pooled_emb = x_seq[:, -1, :]
+            else:
+                # Legacy fallback: EOS last token
+                pooled_emb = x_seq[:, -1, :]
+
             pooled_outputs.append(pooled_emb)
-            
+
         # (1, N_boxes, D)
         return torch.stack(pooled_outputs, dim=1)
