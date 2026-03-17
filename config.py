@@ -112,7 +112,7 @@ class UIEmbedderConfig:
 
     # ---- Device ----
     # GPU recommended; set "cpu" if no CUDA device available.
-    device: str = "cpu"
+    device: str = "cuda"
 
     # ---- Prompts ----
     system_prompt: str = "You are a UI context describer assistant. You answer in russian."
@@ -123,7 +123,7 @@ class UIEmbedderConfig:
     )
 
     # ---- Model identity ----
-    model_name: str = "Qwen/Qwen2-VL-2B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"
 
     # ---- LLM dimensions (derived from model_name preset) ----
     llm_dim: int = 3584

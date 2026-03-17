@@ -231,7 +231,7 @@ class UIEmbedderPipeline:
             # every LLM input sequence and was IDENTICAL across all boxes.
             # The ViT attention already baked global context into every patch, so one
             # mean-pooled vector is a sufficient global summary for the LLM.
-            g_summary = g_seq.mean(dim=1, keepdim=True)  # (1, 1, D)
+            # g_summary = g_seq.mean(dim=1, keepdim=True)  # (1, 1, D)
             s_prefix = 1  # 1 summary token is the bidirectional prefix
 
             # Step 2: Assemble per-box sequences:
@@ -255,7 +255,7 @@ class UIEmbedderPipeline:
                 box_start = 1
                 box_end   = 1 + n_box_tokens
 
-                combined_seq = torch.cat([g_summary, b_seq, text_emb_box], dim=1)
+                combined_seq = torch.cat([b_seq, text_emb_box], dim=1)
                 total_len    = combined_seq.shape[1]
 
                 print(f"  [SeqDebug] Box {i}: summary=1, box_patches={n_box_tokens}, "
@@ -376,7 +376,7 @@ def main():
     # Option B: use the full HuggingFace repo ID
     #   config = UIEmbedderConfig.from_model_name("Qwen/Qwen2.5-VL-3B-Instruct", device="cuda")
     # Option C: keep default 7B (original behaviour)
-    config = UIEmbedderConfig()
+    config = UIEmbedderConfig.from_model_name("2B")
 
     pipeline = UIEmbedderPipeline(config)
 
