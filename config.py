@@ -156,6 +156,9 @@ class UIEmbedderConfig:
     # ---- Detection ----
     max_dist: int = 17
 
+    # ---- Generation ----
+    max_new_tokens: int = 250
+
     # ---- Debug ----
     debug_decode_embeddings: bool = True
     debug_dir: str = "debug"

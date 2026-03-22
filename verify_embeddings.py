@@ -43,5 +43,5 @@ def check_embeddings(file_path):
         print("[!] WARNING: Extremely high similarity! Embeddings might be collapsing or weights weren't loaded correctly.")
 
 if __name__ == "__main__":
-    check_embeddings("output/embeddings_new.json")
+    check_embeddings("output/embeddings.json")
  
