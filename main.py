@@ -12,6 +12,7 @@ from headless_qwen_llm import HeadlessQwen2_5
 from uied_detector import UIEDDetector
 from load_qwen_weights import load_all_weights
 from config import UIEmbedderConfig
+from text_preprocessing import preprocess_text
 
 def smart_resize(image: Image.Image, patch_size: int = 14) -> Image.Image:
     """
@@ -56,6 +57,12 @@ class UIEmbedderPipeline:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             # Standard ImageNet norm, or Qwen specific? Qwen usually just /255
         ])
+
+        # Text token cache (instance-level; keyed on text_content string)
+        self._text_cache_key:  Optional[str]           = None
+        self._text_base_ids:   Optional[torch.Tensor]  = None  # (1, T_base)
+        self._text_prefix_ids: Optional[torch.Tensor]  = None  # (1, T_prefix)
+        self._text_suffix_ids: Optional[torch.Tensor]  = None  # (1, T_suffix)
         
     def _initialize_models(self):
         start_total = time.time()
@@ -137,53 +144,124 @@ class UIEmbedderPipeline:
         print(f"  [+] Detected {len(bboxes)} boxes.")
         return bboxes
         
+    def _build_text_token_cache(self, text_content: str) -> None:
+        """
+        Pre-tokenises the parts of the prompt that are **identical across all
+        boxes** and stores them.  Should be called once per unique text_content
+        before the per-box loop.
+
+        Prompt anatomy:
+          [PREFIX]  <|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\n
+          [SPATIAL]  [bbox: ...]   ← varies per box, tokenised on the fly
+          [BASE]    {instruction/context}{text_content}<|im_end|>\n
+          [SUFFIX]  <|im_start|>assistant\n<|im_end|>     ← generative mode
+                 OR (empty suffix in retrieval mode — EOS is last BASE token)
+        """
+        if self._text_cache_key == text_content:
+            return  # already cached
+
+        tok = self.tokenizer
+
+        if self.config.use_retrieval_prompt:
+            # ----- EXPERIMENTAL: E5/GTE-style retrieval prompt -----
+            # No system turn; simple instruction prefix.
+            # In retrieval mode the last token of BASE becomes the pooling anchor.
+            prefix_text = "<|im_start|>user\n"
+            base_text   = (
+                f"{self.config.retrieval_instruction}{text_content}"
+                "<|im_end|>\n"
+            )
+            suffix_text = ""  # no assistant turn
+            print("  [TextCache] Mode: RETRIEVAL (experimental)")
+        else:
+            # ----- Generative chat-template prompt (default) -----
+            prefix_parts = []
+            if self.config.system_prompt:
+                prefix_parts.append(
+                    f"<|im_start|>system\n{self.config.system_prompt}<|im_end|>\n"
+                )
+            prefix_parts.append("<|im_start|>user\n")
+            prefix_text = "".join(prefix_parts)
+
+            base_text = (
+                f"{self.config.context_prompt}{text_content}"
+                "<|im_end|>\n"
+            )
+            # EOS anchor: the <|im_end|> that closes the assistant turn becomes
+            # the last (summary) token, following the SBERT / E5 convention.
+            suffix_text = "<|im_start|>assistant\n<|im_end|>"
+            print("  [TextCache] Mode: GENERATIVE")
+
+        def _ids(text: str) -> torch.Tensor:
+            """Return (1, L) int64 tensor on device (no padding, no truncation)."""
+            return tok(text, return_tensors="pt", add_special_tokens=False).input_ids.to(self.device)
+
+        prefix_ids = _ids(prefix_text)
+        suffix_ids = _ids(suffix_text) if suffix_text else torch.zeros(
+            (1, 0), dtype=torch.long, device=self.device
+        )
+
+        # Base text tokenised with truncation to leave room for prefix + suffix +
+        # spatial tag (worst-case ~20 tokens).  Hard cap at max_token_length.
+        base_ids_full = tok(
+            base_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+            truncation=True,
+            max_length=self.config.max_token_length,
+        ).input_ids.to(self.device)
+
+        self._text_cache_key   = text_content
+        self._text_prefix_ids  = prefix_ids
+        self._text_base_ids    = base_ids_full
+        self._text_suffix_ids  = suffix_ids
+
+        total_base = prefix_ids.shape[1] + base_ids_full.shape[1] + suffix_ids.shape[1]
+        print(
+            f"  [TextCache] Built: prefix={prefix_ids.shape[1]} base={base_ids_full.shape[1]} "
+            f"suffix={suffix_ids.shape[1]} → total_base={total_base} tokens  "
+            f"(max_token_length={self.config.max_token_length})"
+        )
+
     def _prepare_text_embeddings(
         self,
         text_content: str,
         bbox: Optional[List[float]] = None,
     ) -> torch.Tensor:
         """
-        Builds a per-box tokenized prompt and returns its token embeddings.
+        Assembles per-box token embeddings using the pre-built text cache.
+        Call `_build_text_token_cache(text_content)` once before the box loop.
 
-        Point 1: bbox coordinates are embedded directly in the prompt text so that
-        each UI element gets a unique textual description.  Different bboxes produce
-        different token sequences → different RoPE-encoded keys/values in the LLM
-        → the last-token hidden state encodes both spatial position and visual context.
+        Sequence layout:
+          [prefix_ids] [spatial_tag_ids] [base_ids] [suffix_ids]
+              ↑ system+user header    ↑ bbox coords ↑ body+EOS  ↑ assistant EOS
 
-        Point 2: an explicit <|im_end|> EOS token is appended *after* the assistant
-        prefix so that the last token is always a well-defined "summary anchor",
-        following the convention of sentence-embedding models (E5, SBERT).
+        'base_ids' and 'prefix/suffix_ids' are read from cache (no re-tokenisation).
+        Only the tiny spatial_tag string (~10 tokens) is tokenised per box.
         """
-        print(f"  [+] Text content: {text_content[:50]}...")
+        # Ensure cache is warm (no-op if already built for this text)
+        self._build_text_token_cache(text_content)
 
-        # -- Point 1: inject bbox spatial context into the prompt --
+        # Tokenise the per-box spatial tag (very short, no truncation needed)
         if bbox is not None:
             x1, y1, x2, y2 = bbox
             spatial_tag = f"[bbox: ({x1:.3f},{y1:.3f})-({x2:.3f},{y2:.3f})] "
         else:
             spatial_tag = ""
 
-        # Chat template:
-        # <|im_start|>system\n{sys}<|im_end|>\n
-        # <|im_start|>user\n{spatial_tag}{context}{text}<|im_end|>\n
-        # <|im_start|>assistant\n<|im_end|>   ← EOS anchor (Point 2)
-        prompt_parts = []
-        if self.config.system_prompt:
-            prompt_parts.append(f"<|im_start|>system\n{self.config.system_prompt}<|im_end|>\n")
-
-        prompt_parts.append(
-            f"<|im_start|>user\n"
-            f"{spatial_tag}{self.config.context_prompt}{text_content}"
-            f"<|im_end|>\n"
+        spatial_ids = self.tokenizer(
+            spatial_tag,
+            return_tensors="pt",
+            add_special_tokens=False,
+        ).input_ids.to(self.device) if spatial_tag else torch.zeros(
+            (1, 0), dtype=torch.long, device=self.device
         )
-        # Point 2: add explicit EOS token so it becomes the last (summary) token
-        prompt_parts.append("<|im_start|>assistant\n<|im_end|>")
 
-        prompt_text = "".join(prompt_parts)
-        print(f"  [+] Prompt (first 80 chars): {prompt_text[:80]}...")
-
-        inputs = self.tokenizer(prompt_text, return_tensors="pt")
-        input_ids = inputs.input_ids.to(self.device)  # (1, Seq)
+        # Assemble full input_ids: (1, T_prefix + T_spatial + T_base + T_suffix)
+        input_ids = torch.cat(
+            [self._text_prefix_ids, spatial_ids, self._text_base_ids, self._text_suffix_ids],
+            dim=1,
+        )
 
         # Token embeddings: (1, Seq, LLM_DIM)
         text_emb = self.token_embedding(input_ids)
@@ -191,7 +269,10 @@ class UIEmbedderPipeline:
         assert text_emb.shape[-1] == self.config.llm_dim, (
             f"[DIM MISMATCH] text_emb dim={text_emb.shape[-1]} != LLM_DIM={self.config.llm_dim}."
         )
-        print(f"  [Debug] text_emb shape: {text_emb.shape}  ✓ last token = <|im_end|> EOS anchor")
+        print(
+            f"  [Debug] text_emb shape: {text_emb.shape}  "
+            f"(spatial={spatial_ids.shape[1]} base={self._text_base_ids.shape[1]} tokens)"
+        )
         return text_emb
 
     def _forward_pass(self, image: Image.Image, text_content: str, bboxes: Optional[List[List[float]]] = None) -> Tuple[torch.Tensor, List[List[float]]]:
@@ -226,18 +307,31 @@ class UIEmbedderPipeline:
             # b_seqs: list of (1, N_b, D)  — ROI patches, UNIQUE per box
             g_seq, b_seqs = self.box_encoder(img_tensor, boxes_tensor)
 
-            # --- Fix 1: compress g_seq to a single mean-pooled summary token ---
-            # The full g_seq (~400 tokens for a 560×560 image) was making up >95% of
-            # every LLM input sequence and was IDENTICAL across all boxes.
-            # The ViT attention already baked global context into every patch, so one
-            # mean-pooled vector is a sufficient global summary for the LLM.
-            # g_summary = g_seq.mean(dim=1, keepdim=True)  # (1, 1, D)
-            s_prefix = 1  # 1 summary token is the bidirectional prefix
+            # --- Global summary token (controlled by config.use_global_summary) ---
+            # When enabled: g_seq is mean-pooled into 1 token and prepended as a
+            # bidirectional prefix.  ViT attention already baked global context into
+            # every patch, so one mean-pooled vector is a sufficient LLM summary.
+            if self.config.use_global_summary:
+                g_summary = g_seq.mean(dim=1, keepdim=True)  # (1, 1, D)
+                s_prefix  = 1   # bidirectional prefix length for HeadlessQwen2_5
+                print(f"  [GlobalSummary] ON  — prepending 1 summary token")
+            else:
+                g_summary = None
+                s_prefix  = 0   # fully causal
+                print(f"  [GlobalSummary] OFF — no summary token")
 
-            # Step 2: Assemble per-box sequences:
+            # Step 2: Pre-build text token cache ONCE for all boxes.
+            print(f"\n[*] Building text token cache for {len(b_seqs)} boxes...")
+            self._build_text_token_cache(text_content)
+
+            # Step 3: Assemble per-box sequences.
+            # Layout when use_global_summary=True:
             #   [g_summary(1) | box_patches(N_b) | text+EOS(T)]
-            # Track box-patch positions for Fix 2 pooling.
-            seqs_list = []
+            #    s_prefix=1     box=[1, 1+N_b)      causal
+            # Layout when use_global_summary=False:
+            #   [box_patches(N_b) | text+EOS(T)]
+            #    s_prefix=0        box=[0, N_b)      fully causal
+            seqs_list    = []
             s_box_starts = []
             s_box_ends   = []
 
@@ -245,28 +339,30 @@ class UIEmbedderPipeline:
                 bbox_coords  = bboxes[i]
                 n_box_tokens = b_seq.shape[1]
 
-                # Per-box text embeddings (includes spatial tag + EOS anchor)
+                # Per-box text embeddings: cache hit for shared parts, only
+                # the spatial_tag (~10 tokens) is re-tokenised here.
                 text_emb_box = self._prepare_text_embeddings(text_content, bbox=bbox_coords)
 
-                # Sequence positions:
-                #   [0]                    → g_summary
-                #   [1 : 1+n_box_tokens]   → box patches  ← pool these
-                #   [1+n_box_tokens : end] → text + EOS
-                box_start = 1
-                box_end   = 1 + n_box_tokens
+                # Box patch positions depend on whether g_summary is prepended.
+                box_start = s_prefix              # 0 or 1
+                box_end   = s_prefix + n_box_tokens
 
-                combined_seq = torch.cat([b_seq, text_emb_box], dim=1)
-                total_len    = combined_seq.shape[1]
+                if g_summary is not None:
+                    combined_seq = torch.cat([g_summary, b_seq, text_emb_box], dim=1)
+                else:
+                    combined_seq = torch.cat([b_seq, text_emb_box], dim=1)
+                total_len = combined_seq.shape[1]
 
-                print(f"  [SeqDebug] Box {i}: summary=1, box_patches={n_box_tokens}, "
-                      f"text={text_emb_box.shape[1]}, total={total_len}  "
+                g_info = "g=1 " if g_summary is not None else "g=0 "
+                print(f"  [SeqDebug] Box {i}: {g_info}box_patches={n_box_tokens} "
+                      f"text={text_emb_box.shape[1]} total={total_len} "
                       f"box_pool=[{box_start}:{box_end}]")
 
                 seqs_list.append(combined_seq)
                 s_box_starts.append(box_start)
                 s_box_ends.append(box_end)
 
-            # Step 3: LLM + pooling at box-patch positions
+            # Step 4: LLM + pooling at box-patch positions
             output_embeddings = self.headless_llm(
                 seqs_list,
                 s_prefix=s_prefix,
@@ -389,7 +485,7 @@ def main():
     # Load inputs
     image = Image.open(img_path).convert("RGB")
     with open(txt_path, 'r', encoding='utf-8') as f:
-        text_content = f.read().strip()
+        text_content = preprocess_text(f.read().strip())
 
     # Process
     embeddings_dict = pipeline.process(image, text_content)

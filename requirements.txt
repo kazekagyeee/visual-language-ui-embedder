@@ -8,3 +8,5 @@ safetensors
 transformers
 accelerate
 torchvision
+nltk
+pymorphy3

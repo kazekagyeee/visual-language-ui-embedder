@@ -122,6 +122,32 @@ class UIEmbedderConfig:
         "а далее текст, который является контекстом к основному изображению: "
     )
 
+    # ---- Retrieval prompt (EXPERIMENTAL) ----
+    # When True, uses an E5/GTE-style instruct prompt instead of the generative
+    # chat template. This is intended for future contrastive fine-tuning experiments.
+    # EXPERIMENTAL: quality without fine-tuning is NOT guaranteed — the base Qwen
+    # model was not trained for retrieval alignment.
+    use_retrieval_prompt: bool = False
+    # Instruction prepended to the text in retrieval mode.
+    retrieval_instruction: str = (
+        "Instruct: Given a UI screenshot and its description, retrieve the UI component "
+        "that best matches the query.\nQuery: "
+    )
+
+    # ---- Global summary token ----
+    # When True, g_seq is mean-pooled into a single summary token and prepended
+    # as a bidirectional prefix to each per-box LLM input sequence:
+    #   [g_summary(1) | box_patches(N_b) | text+EOS(T)]
+    # When False (default), g_summary is omitted and the sequence is:
+    #   [box_patches(N_b) | text+EOS(T)]
+    # box_start/box_end indices in HeadlessQwen2_5 are shifted automatically.
+    use_global_summary: bool = False
+
+    # ---- Tokenizer ----
+    # Maximum token length for the assembled prompt (text side only).
+    # Prevents OOM when text_content is very long.
+    max_token_length: int = 512
+
     # ---- Model identity ----
     model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"
 
