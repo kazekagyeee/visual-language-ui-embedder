@@ -5,14 +5,14 @@ import json
 import os
 import time
 from transformers import AutoTokenizer
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Union
 
 from box_aware_visual_encoder import Qwen2_5_BoxEncoder
 from headless_qwen_llm import HeadlessQwen2_5
 from uied_detector import UIEDDetector
 from load_qwen_weights import load_all_weights
 from config import UIEmbedderConfig
-from text_preprocessing import preprocess_text
+
 
 def smart_resize(image: Image.Image, patch_size: int = 14) -> Image.Image:
     """
@@ -20,20 +20,21 @@ def smart_resize(image: Image.Image, patch_size: int = 14) -> Image.Image:
     This prevents shape mismatch errors in ViT patch embedding.
     """
     w, h = image.size
-    
+
     # Calculate new dimensions
     new_w = (w // patch_size) * patch_size
     new_h = (h // patch_size) * patch_size
-    
+
     # Enforce minimum size if needed (e.g. 1 patch)
     if new_w < patch_size: new_w = patch_size
     if new_h < patch_size: new_h = patch_size
-    
+
     if (new_w, new_h) != (w, h):
         print(f"[*] Smart Resize: {w}x{h} -> {new_w}x{new_h}")
         return image.resize((new_w, new_h), resample=Image.BICUBIC)
-    
+
     return image
+
 
 class UIEmbedderPipeline:
     def __init__(self, config: Optional[UIEmbedderConfig] = None):
@@ -43,12 +44,12 @@ class UIEmbedderPipeline:
         self.config = config if config is not None else UIEmbedderConfig()
         self.device = self.config.device
         print(f"[*] Using device: {self.device}")
-        
+
         self._initialize_models()
         self._load_weights()
-        
+
         self.detector = UIEDDetector()
-        
+
         from torchvision import transforms
         # Prepare Tensors
         # Image: (1, 3, 224, 224)
@@ -59,11 +60,11 @@ class UIEmbedderPipeline:
         ])
 
         # Text token cache (instance-level; keyed on text_content string)
-        self._text_cache_key:  Optional[str]           = None
-        self._text_base_ids:   Optional[torch.Tensor]  = None  # (1, T_base)
-        self._text_prefix_ids: Optional[torch.Tensor]  = None  # (1, T_prefix)
-        self._text_suffix_ids: Optional[torch.Tensor]  = None  # (1, T_suffix)
-        
+        self._text_cache_key: Optional[str] = None
+        self._text_base_ids: Optional[torch.Tensor] = None  # (1, T_base)
+        self._text_prefix_ids: Optional[torch.Tensor] = None  # (1, T_prefix)
+        self._text_suffix_ids: Optional[torch.Tensor] = None  # (1, T_suffix)
+
     def _initialize_models(self):
         start_total = time.time()
         print("[*] Initializing models...")
@@ -116,7 +117,7 @@ class UIEmbedderPipeline:
             print("[*] Converted models to BFloat16")
         except Exception as e:
             print(f"[!] BFloat16 not supported? {e}. Using float32.")
-            
+
         try:
             load_all_weights(
                 box_encoder=self.box_encoder,
@@ -130,20 +131,20 @@ class UIEmbedderPipeline:
 
         t_load = time.time()
         print(f"  [Time] Weight Loading: {t_load - t_init:.2f}s")
-        
+
     def extract_bboxes(self, image: Image.Image) -> List[List[float]]:
         # Debug output path
         os.makedirs(self.config.debug_dir, exist_ok=True)
         debug_bbox_path = os.path.join(self.config.debug_dir, "uied_bbox_debug.png")
-        
+
         bboxes = self.detector.detect(image, max_dist=self.config.max_dist, debug_output_path=debug_bbox_path)
         if not bboxes:
             print("[!] No boxes detected! Using full image box.")
             bboxes = [[0.0, 0.0, 1.0, 1.0]]
-            
+
         print(f"  [+] Detected {len(bboxes)} boxes.")
         return bboxes
-        
+
     def _build_text_token_cache(self, text_content: str) -> None:
         """
         Pre-tokenises the parts of the prompt that are **identical across all
@@ -167,7 +168,7 @@ class UIEmbedderPipeline:
             # No system turn; simple instruction prefix.
             # In retrieval mode the last token of BASE becomes the pooling anchor.
             prefix_text = "<|im_start|>user\n"
-            base_text   = (
+            base_text = (
                 f"{self.config.retrieval_instruction}{text_content}"
                 "<|im_end|>\n"
             )
@@ -211,10 +212,10 @@ class UIEmbedderPipeline:
             max_length=self.config.max_token_length,
         ).input_ids.to(self.device)
 
-        self._text_cache_key   = text_content
-        self._text_prefix_ids  = prefix_ids
-        self._text_base_ids    = base_ids_full
-        self._text_suffix_ids  = suffix_ids
+        self._text_cache_key = text_content
+        self._text_prefix_ids = prefix_ids
+        self._text_base_ids = base_ids_full
+        self._text_suffix_ids = suffix_ids
 
         total_base = prefix_ids.shape[1] + base_ids_full.shape[1] + suffix_ids.shape[1]
         print(
@@ -224,9 +225,9 @@ class UIEmbedderPipeline:
         )
 
     def _prepare_text_embeddings(
-        self,
-        text_content: str,
-        bbox: Optional[List[float]] = None,
+            self,
+            text_content: str,
+            bbox: Optional[List[float]] = None,
     ) -> torch.Tensor:
         """
         Assembles per-box token embeddings using the pre-built text cache.
@@ -275,30 +276,31 @@ class UIEmbedderPipeline:
         )
         return text_emb
 
-    def _forward_pass(self, image: Image.Image, text_content: str, bboxes: Optional[List[List[float]]] = None) -> Tuple[torch.Tensor, List[List[float]]]:
+    def _forward_pass(self, image: Image.Image, text_content: str, bboxes: Optional[List[List[float]]] = None) -> Tuple[
+        torch.Tensor, List[List[float]]]:
         """
         Internal forward pass.
         Processes image and text, returns raw embeddings and bounding boxes.
         """
         t_start = time.time()
         print(f"\n[*] Processing inputs...")
-        
+
         # Apply Smart Resize to align with patch grid
         # Qwen2.5-VL uses 2×2 spatial merge → need multiple of 28 (14 × 2)
         image = smart_resize(image, patch_size=self.config.patch_size_resize)
-        
+
         if bboxes is None:
             bboxes = self.extract_bboxes(image)
-            
+
         # Image: (1, 3, 224, 224)
         img_tensor = self.transform(image).unsqueeze(0).to(self.device).bfloat16()
-        
+
         # Boxes: (1, N, 4)
-        boxes_tensor = torch.tensor([bboxes]).to(self.device).float() # Boxes positional doesn't need bf16 usually?
-        
+        boxes_tensor = torch.tensor([bboxes]).to(self.device).float()  # Boxes positional doesn't need bf16 usually?
+
         t_process = time.time()
         print(f"  [Time] Input Processing & Detection: {t_process - t_start:.2f}s")
-        
+
         print("\n[*] Running Forward Pass...")
 
         with torch.no_grad():
@@ -313,11 +315,11 @@ class UIEmbedderPipeline:
             # every patch, so one mean-pooled vector is a sufficient LLM summary.
             if self.config.use_global_summary:
                 g_summary = g_seq.mean(dim=1, keepdim=True)  # (1, 1, D)
-                s_prefix  = 1   # bidirectional prefix length for HeadlessQwen2_5
+                s_prefix = 1  # bidirectional prefix length for HeadlessQwen2_5
                 print(f"  [GlobalSummary] ON  — prepending 1 summary token")
             else:
                 g_summary = None
-                s_prefix  = 0   # fully causal
+                s_prefix = 0  # fully causal
                 print(f"  [GlobalSummary] OFF — no summary token")
 
             # Step 2: Pre-build text token cache ONCE for all boxes.
@@ -331,12 +333,12 @@ class UIEmbedderPipeline:
             # Layout when use_global_summary=False:
             #   [box_patches(N_b) | text+EOS(T)]
             #    s_prefix=0        box=[0, N_b)      fully causal
-            seqs_list    = []
+            seqs_list = []
             s_box_starts = []
-            s_box_ends   = []
+            s_box_ends = []
 
             for i, b_seq in enumerate(b_seqs):
-                bbox_coords  = bboxes[i]
+                bbox_coords = bboxes[i]
                 n_box_tokens = b_seq.shape[1]
 
                 # Per-box text embeddings: cache hit for shared parts, only
@@ -344,8 +346,8 @@ class UIEmbedderPipeline:
                 text_emb_box = self._prepare_text_embeddings(text_content, bbox=bbox_coords)
 
                 # Box patch positions depend on whether g_summary is prepended.
-                box_start = s_prefix              # 0 or 1
-                box_end   = s_prefix + n_box_tokens
+                box_start = s_prefix  # 0 or 1
+                box_end = s_prefix + n_box_tokens
 
                 if g_summary is not None:
                     combined_seq = torch.cat([g_summary, b_seq, text_emb_box], dim=1)
@@ -369,31 +371,92 @@ class UIEmbedderPipeline:
                 s_box_starts=s_box_starts,
                 s_box_ends=s_box_ends,
             )
-            
+
         print(f"  [+] Output Shape: {output_embeddings.shape}")
 
         t_forward = time.time()
         print(f"  [Time] Forward Pass: {t_forward - t_process:.2f}s")
 
         return output_embeddings, bboxes
-        
-    def process(self, image: Image.Image, text_content: str, bboxes: Optional[List[List[float]]] = None) -> Dict[Tuple[float, float, float, float], List[float]]:
+
+    def process(self, image: Optional[Image.Image] = None, text_content: Union[str, List[str]] = "",
+                bboxes: Optional[List[List[float]]] = None) -> Union[
+        Dict[Tuple[float, float, float, float], List[float]], 'np.ndarray']:
         """
         Processes image and text, returns a dictionary mapping bounding boxes to their embeddings.
+        OVERLOAD: If image is None, processes text_content (string or list of strings) as pure text
+        and returns a numpy array of embeddings (N, D).
         """
+        import numpy as np
+
+        if image is None:
+            # Векторизация чистого текста (перегрузка)
+            texts = text_content if isinstance(text_content, list) else [text_content]
+
+            try:
+                import sys
+                import os
+                root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+                if root_dir not in sys.path:
+                    sys.path.append(root_dir)
+                from text_preprocessing import preprocess_text
+                texts = [preprocess_text(t) or t for t in texts]
+            except Exception as e:
+                print(f"[!] Warning: text_preprocessing not found or failed ({e}). Proceeding without preprocessing.")
+
+            embeddings = []
+            batch_size = 4
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                inputs = self.tokenizer(
+                    batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.max_token_length
+                )
+                input_ids = inputs.input_ids.to(self.device)
+                attention_mask = inputs.attention_mask.to(self.device)
+
+                token_embs = self.token_embedding(input_ids)
+
+                seqs_list = []
+                s_box_starts = []
+                s_box_ends = []
+
+                for b in range(token_embs.shape[0]):
+                    seq_len = attention_mask[b].sum().item()
+                    unpadded_seq = token_embs[b:b + 1, :seq_len, :]
+                    seqs_list.append(unpadded_seq)
+                    # Mean pool over the entire text sequence
+                    s_box_starts.append(0)
+                    s_box_ends.append(seq_len)
+
+                with torch.no_grad():
+                    out = self.headless_llm(
+                        seqs_list,
+                        s_prefix=0,
+                        s_box_starts=s_box_starts,
+                        s_box_ends=s_box_ends
+                    )
+                embeddings.append(out[0].cpu().float().numpy())
+
+            return np.vstack(embeddings)
+
+        # Обычная векторизация изображений + контекстного текста
         output_embeddings, bboxes_out = self._forward_pass(image, text_content, bboxes)
 
         if self.config.debug_decode_embeddings:
             self.analyze_similarities(output_embeddings, bboxes_out)
-            
+
         out_dict = {}
-        out_data = output_embeddings[0].cpu().float().numpy() # (N, Dim)
-        
+        out_data = output_embeddings[0].cpu().float().numpy()  # (N, Dim)
+
         for i, bbox in enumerate(bboxes_out):
             out_dict[tuple(bbox)] = out_data[i].tolist()
-            
+
         return out_dict
-        
+
     def analyze_similarities(self, output_embeddings: torch.Tensor, bboxes: List[List[float]]) -> Dict[str, Any]:
         """
         Analyzes cosine similarities between generated embeddings and saves results.
@@ -407,7 +470,8 @@ class UIEmbedderPipeline:
 
         # Normalize embeddings for cosine similarity
         emb_batch = output_embeddings[0]  # (N, LLM_DIM)
-        print(f"  [DEBUG] Embeddings Stats: Min={emb_batch.min().item():.4f}, Max={emb_batch.max().item():.4f}, Mean={emb_batch.mean().item():.4f}")
+        print(
+            f"  [DEBUG] Embeddings Stats: Min={emb_batch.min().item():.4f}, Max={emb_batch.max().item():.4f}, Mean={emb_batch.mean().item():.4f}")
 
         # L2 normalize
         emb_normalized = torch.nn.functional.normalize(emb_batch, p=2, dim=1)
@@ -461,6 +525,7 @@ class UIEmbedderPipeline:
         print(f"\n[DEBUG] Similarity analysis saved to {debug_file}")
         return debug_out
 
+
 # Example usage when running as main script
 def main():
     start_total = time.time()
@@ -485,7 +550,7 @@ def main():
     # Load inputs
     image = Image.open(img_path).convert("RGB")
     with open(txt_path, 'r', encoding='utf-8') as f:
-        text_content = preprocess_text(f.read().strip())
+        text_content = f.read().strip()
 
     # Process
     embeddings_dict = pipeline.process(image, text_content)
