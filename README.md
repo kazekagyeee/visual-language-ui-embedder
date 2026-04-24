@@ -1,176 +1,116 @@
 # Visual Language UI Embedder
 
-Пайплайн для генерации контекстных эмбеддингов UI компонентов на основе Qwen2.5-VL для RAG-систем.
+Пайплайн на базе семейства моделей **Qwen2.5-VL** для извлечения контекстных семантических эмбеддингов UI-компонентов. Система позволяет преобразовывать элементы интерфейса в векторное представление, учитывающее как визуальные особенности самого элемента, так и глобальный контекст всего экрана и текстовое описание задачи.
 
 ## 🎯 Назначение
 
-Система извлекает семантические эмбеддинги отдельных UI компонентов с учетом контекста всего изображения и текстового описания. Эмбеддинги используются для поиска релевантных элементов интерфейса по текстовым запросам.
+Проект предназначен для создания продвинутых RAG-систем (Retrieval-Augmented Generation), работающих с графическими интерфейсами. Основная цель — обеспечить высокоточный поиск UI-элементов по текстовым запросам («кнопка входа», «поле ввода email» и т.д.), понимая их функциональное назначение в конкретном контексте.
 
-## 📊 Архитектура
+---
 
+## 🏗️ Архитектура
+
+Система реализует иерархический подход к кодированию визуальной информации:
+
+1.  **Smart Resize**: Динамическое изменение размера изображения с сохранением пропорций и выравниванием по сетке патчей (28px).
+2.  **UIED Detection**: Детекция границ UI-компонентов с использованием методов компьютерного зрения (OpenCV).
+3.  **Box-Aware Visual Encoder (ViT-32L)**:
+    *   Извлечение признаков всего изображения (**Global Sequence**).
+    *   **ROI Pooling**: Прицельное извлечение патчей для каждого обнаруженного bbox (**Local Sequences**).
+4.  **Spatial Merge & MLP**: Группировка пространственных патчей 2×2 и проекция в пространство LLM (3584-dim для 7B версии).
+5.  **Headless LLM (Qwen 28L)**: Обработка визуальных токенов совместно с текстовым промптом для получения финальных контекстных эмбеддингов.
+
+### Схема последовательности (Inference)
+```mermaid
+graph TD
+    Img[Входное изображение] --> Resize[Smart Resize]
+    Resize --> ViT[Vision Encoder]
+    Resize --> UIED[UIED Detector]
+    UIED -- Bboxes --> ROI[ROI Pooling]
+    ViT -- Full Map --> ROI
+    ROI -- Bbox Patches --> Merger[Spatial Merge & Projector]
+    Merger --> LLM[Headless Qwen LLM]
+    Text[Текстовый контекст] --> LLM
+    LLM --> Out[Эмбеддинги компонентов]
 ```
-Input Image (dynamic resolution)
-    ↓ Smart Resize (align to 28px)
-    ↓ UIED Detection (CV-based)
-    ↓ Qwen2_5_BoxEncoder (ViT 32L, 1280-dim)
-    ↓ ROI Pooling (extract per bbox)
-    ↓ Qwen2VLSpatialMerge (2×2 grouping + MLP → 3584-dim)
-    ↓ VisualToTextProjector (align with text)
-    ↓ HeadlessQwen2_5 (28L LLM)
-    ↓ Final Embeddings (N, 3584) → JSON
-```
 
-**Визуализация:** Откройте [pipeline_diagram.html](pipeline_diagram.html) для интерактивной диаграммы.
+**Интерактивная диаграмма:** Откройте [vit_diagram.html](vit_diagram.html) для детального изучения внутренней структуры ViT и Spatial Merge.
 
-## 🔑 Ключевые возможности
+---
 
-### ✅ Реализовано
+## 🚀 Ключевые возможности
 
-- **Native Dynamic Resolution**: Изображения обрабатываются без жёсткого resize к фиксированному размеру
-- **Qwen2.5-VL Spatial Merge**: Правильная 2×2 группировка патчей + MLP проекция
-- **ROI Pooling**: Извлечение эмбеддингов для каждого UI компонента из merged grid
-- **Контекстные эмбеддинги**: Учет глобального изображения + текстового описания
-- **Mean Pooling для текста**: Семантическое представление (лучше для retrieval)
-- **Debug визуализация**: Сохранение bbox на изображении
-- **Timing logs**: Замеры времени выполнения этапов
+*   **Мульти-модальность**: Полная поддержка Qwen2.5-VL (2B, 3B, 7B, 72B). Автоматическая настройка архитектуры под выбранную модель.
+*   **Контекстуализация**: В отличие от простых кропов (CLIP), каждый эмбеддинг "знает", что находится вокруг него.
+*   **Обучение (LoRA Triplet Loss)**: Встроенный механизм дообучения для выравнивания (alignment) текстовых запросов и визуальных признаков.
+*   **Генерация описаний**: Скрипт для автоматического создания текстовых описаний для каждого UI-элемента на основе VLM.
+*   **Предпроцессинг**: Интегрированная очистка и нормализация текста для улучшения качества поиска.
 
-### 🔧 Опционально (TODO)
+---
 
-- **Learned Tokens**: Обучаемые токены вместо ROI pooling (требует файнтюнинга)
-- **M-RoPE**: 3D позиционные эмбеддинги (temporal + spatial) вместо 2D
+## 🛠️ Основные модули
 
-## 🚀 Использование
+### 🔹 Инференс и обработка
+- `main.py`: Основной пайплайн генерации эмбеддингов.
+- `box_aware_visual_encoder.py`: Реализация кастомного энкодера с поддержкой ROI Pooling и Spatial Merge.
+- `uied_detector.py`: Детектор UI-компонентов на базе OpenCV.
+- `config.py`: Централизованная конфигурация (выбор модели, параметры девайса, промпты).
 
-### Установка
+### 🔹 Обучение (Training)
+- `training/train_lora_triplet.py`: Скрипт для fine-tuning модели. Использует **Triplet Margin Loss** и **LoRA** для эффективного обучения на ограниченном VRAM (от 15 ГБ).
+- `training/triplet_dataset.json`: Пример структуры данных для обучения (Anchor, Positive, Negative).
 
+### 🔹 Генерация и утилиты
+- `generate_embeddings_text.py`: Генерация текстовых описаний для компонентов (VLM-to-Text).
+- `text_preprocessing.py`: NLP-пайплайн для очистки текстового контекста.
+- `verify_embeddings.py`: Скрипт для проверки косинусного сходства векторов.
+
+---
+
+## ⚡ Быстрый старт
+
+### 1. Установка зависимостей
 ```bash
 pip install -r requirements.txt
 ```
 
-### Запуск как standalone скрипт
-
+### 2. Запуск базового инференса
+Положите изображение в `input_images/image_20_2.png` и запустите:
 ```bash
 python main.py
 ```
+Результат будет сохранен в `output/embeddings.json`.
 
-**Входные данные (по умолчанию):**
-- `input_images/image_20_2.png` - изображение UI
-- `input_images/image_20_2.txt` - текстовое описание
+### 3. Запуск дообучения (Fine-tuning)
+Для выравнивания текстовых и визуальных пространств:
+```bash
+python training/train_lora_triplet.py
+```
 
-**Выходные данные:**
-- `output/embeddings.json` - словарь с форматом `[tuple(bbox)] = embedding`
-- `debug/uied_bbox_debug.png` - визуализация детекций
-- `debug/embedding_similarities.json` - анализ косинусного сходства компонентов
+---
 
-### Использование как модели в других проектах
+## ⚙️ Конфигурация (`config.py`)
 
-Вы можете легко импортировать пайплайн и использовать его программно в своих приложениях.
-
+Вы можете переключаться между моделями разного размера через алиасы:
 ```python
-from main import UIEmbedderPipeline
-from config import UIEmbedderConfig
-from PIL import Image
-
-# 1. (Опционально) Переопределение конфигурации
-config = UIEmbedderConfig(
-    device="cuda", # если хватает VRAM
-    debug_decode_embeddings=False # отключить дебаг для скорости
-)
-
-# 2. Инициализация пайплайна (загружает веса)
-pipeline = UIEmbedderPipeline(config)
-
-# 3. Подготовка входных данных
-image = Image.open("path/to/my/ui_screenshot.png").convert("RGB")
-text_context = "Текст описывающий контекст экрана"
-
-# 4. Запуск генерации эмбеддингов
-# Получаем словарь: ключи - координаты (x1, y1, x2, y2), значения - эмбеддинги (list of floats)
-embeddings_dict = pipeline.process(image, text_context)
-
-for bbox, embedding in embeddings_dict.items():
-    print(f"Component at {bbox}: {len(embedding)}-dimensional vector")
+# Варианты: "2B", "3B", "7B", "72B"
+config = UIEmbedderConfig.from_model_name("3B", device="cuda")
 ```
 
-### Конфигурация (`config.py`)
+**Ключевые параметры:**
+- `use_global_summary`: Добавлять ли "глобальный" токен изображения в начало последовательности (улучшает контекст).
+- `use_retrieval_prompt`: Использовать ли специальные инструкции для поиска (E5-style).
+- `max_dist`: Чувствительность группировки элементов в UIED-детекторе.
 
-Все настраиваемые параметры вынесены в отдельный dataclass `UIEmbedderConfig`. Основные параметры:
+---
 
-- `device`: `"cpu"` или `"cuda"`
-- `system_prompt` и `context_prompt`: промпты для LLM
-- `llm_dim`, `heads_vis`, `depth_vis`: параметры архитектуры (под Qwen2.5-VL-7B)
-- `model_name`: `"Qwen/Qwen2.5-VL-7B-Instruct"` (откуда скачивать веса)
-- `img_size`, `patch_size_encoder`, `patch_size_resize`: настройки обработки изображений
-- `max_dist`: параметр uied детектора для склеивания близких боксов
-- `debug_decode_embeddings`: включение/выключение анализа сходства (анализ замедляет работу)
+## ⚠️ Важные примечания
 
-## 📁 Структура проекта
+1.  **VRAM**: Для работы с 7B моделью требуется ~16-20 ГБ VRAM. Для обучения (даже с LoRA) рекомендуется использовать 2B или 3B версию на картах с 16 ГБ.
+2.  **Retrieval Alignment**: Базовая модель Qwen2.5-VL обучена на генерацию. Для качественного RAG поиска настоятельно рекомендуется использовать обученный LoRA-адаптер из секции Training.
+3.  **Debug Decoding**: Файл `decoded_embeddings.json` в папке `debug` служит только для визуальной проверки того, что видит модель. Не используйте эти тексты для поиска.
 
-```
-.
-├── main.py                          # Основной скрипт
-├── box_aware_visual_encoder.py      # ViT + Spatial Merge + ROI Pooling
-├── vision_to_text_projector.py      # Проектор visual → LLM space
-├── headless_qwen_llm.py             # LLM без generation head
-├── uied_detector.py                 # UIED детектор UI компонентов
-├── load_qwen_weights.py             # Загрузчик весов Qwen2-VL
-├── pipeline_diagram.html            # Интерактивная диаграмма
-├── input_images/                    # Входные данные
-├── output/                          # Эмбеддинги
-└── debug/                           # Debug артефакты
-```
+---
 
-## 🔬 Использование для RAG
-
-### 1. Индексация
-
-```python
-# Сохраняем эмбеддинги в векторную БД
-import json
-
-with open("output/embeddings_new.json") as f:
-    segments = json.load(f)
-
-for seg in segments:
-    bbox = seg["bbox"]
-    embedding = seg["embedding"]  # (3584,)
-    # Сохранить в Pinecone/Weaviate/Qdrant
-```
-
-### 2. Поиск
-
-```python
-# Подготовка эмбеддинга запроса (используем токенизатор и эмбеддинги из pipeline)
-query = "кнопка войти"
-query_ids = pipeline.tokenizer(query, return_tensors="pt").input_ids.to(pipeline.device)
-query_emb = pipeline.token_embedding(query_ids).mean(dim=1)  # Mean pooling
-
-# Поиск по cosine similarity
-# results = vector_db.search(query_emb.cpu().numpy(), top_k=5)
-```
-
-## ⚠️ Важные замечания
-
-### Debug Decoding (LM Head)
-
-**LM Head НЕ подходит для RAG!** Он обучен для автогрессивной генерации текста, а не для retrieval. Если видите пробелы/garbage в `decoded_embeddings.json` - это нормально.
-
-**Для RAG используйте** `output_embeddings` напрямую из HeadlessLLM.
-
-### Размерности
-
-- **ViT Patches**: (H/14, W/14, 1280)
-- **Spatial Merge**: (H/28, W/28, 3584) - 2×2 grouping + MLP
-- **ROI Pooling**: (N, 3584) - mean pool per bbox
-- **Final Embeddings**: (N, 3584) - after LLM processing
-
-### Веса
-
-Используются предобученные веса `Qwen/Qwen2.5-VL-7B-Instruct`:
-- Vision Encoder (ViT): 32 слоя, 1280-dim
-- Spatial Merge MLP: 5120 → 3584
-- LLM: 28 слоёв, 3584-dim
-
-## 📝 License
-
-MIT
+## 📝 Лицензия
+MIT

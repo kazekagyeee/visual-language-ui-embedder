@@ -4,6 +4,8 @@ from PIL import Image
 import json
 import os
 import time
+
+from peft import PeftModel
 from transformers import AutoTokenizer
 from typing import List, Optional, Tuple, Dict, Any, Union
 
@@ -112,7 +114,8 @@ class UIEmbedderPipeline:
         # Using BFloat16 is recommended for Qwen2.5
         try:
             self.box_encoder = self.box_encoder.bfloat16()
-            self.headless_llm = self.headless_llm.bfloat16()
+            #self.headless_llm = self.headless_llm.bfloat16()
+            self.headless_llm = PeftModel.from_pretrained(self.headless_llm, 'training/output/lora_triplet_adapter')
             self.token_embedding = self.token_embedding.bfloat16()
             print("[*] Converted models to BFloat16")
         except Exception as e:
