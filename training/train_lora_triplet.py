@@ -1,6 +1,9 @@
 import argparse
+import contextlib
 import glob
+import io
 import json
+import math
 import os
 import sys
 import time
@@ -47,6 +50,22 @@ def print_floating_dtype_summary(name, module):
     print(f"  [dtype] {name}: {counts}", flush=True)
 
 
+@contextlib.contextmanager
+def suppress_stdout():
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        yield
+
+
+def optimizer_steps_per_epoch(num_batches, grad_accum_steps):
+    return max(1, math.ceil(num_batches / max(1, grad_accum_steps)))
+
+
+def build_training_scheduler(optimizer, epochs, num_batches, grad_accum_steps):
+    total_optimizer_steps = optimizer_steps_per_epoch(num_batches, grad_accum_steps) * max(1, epochs)
+    return CosineAnnealingLR(optimizer, T_max=max(1, total_optimizer_steps))
+
+
 def parse_args():
     output_dir = Path(os.environ.get("TRAINING_OUTPUT_DIR", DEFAULT_OUTPUT_DIR))
     dataset_path = Path(os.environ.get("TRIPLET_DATASET_PATH", DEFAULT_DATASET_PATH))
@@ -60,7 +79,7 @@ def parse_args():
     parser.add_argument("--final-adapter-dir", type=Path, default=None)
     parser.add_argument("--model-size", default=os.environ.get("MODEL_SIZE", "2B"))
     parser.add_argument("--device", default=os.environ.get("TRAINING_DEVICE", "cuda"))
-    parser.add_argument("--epochs", type=int, default=int(os.environ.get("EPOCHS", "3")))
+    parser.add_argument("--epochs", type=int, default=int(os.environ.get("EPOCHS", "10")))
     parser.add_argument("--lr", type=float, default=float(os.environ.get("LR", "2e-5")))
     parser.add_argument(
         "--gradient-accumulation-steps",
@@ -139,62 +158,45 @@ class TripletUIDataset(Dataset):
         }
 
 
-def prepare_sequences_for_llm(pipeline, image, text_content, bbox, device):
-    image = smart_resize(image, patch_size=pipeline.config.patch_size_resize)
-    img_tensor = pipeline.transform(image).unsqueeze(0).to(device=device, dtype=TRAINING_DTYPE)
-    if bbox is None:
-        boxes_tensor = torch.tensor([[[0.0, 0.0, 1.0, 1.0]]], device=device, dtype=TRAINING_DTYPE)
-    else:
-        boxes_tensor = torch.tensor([[bbox]], device=device, dtype=TRAINING_DTYPE)
-
-    with torch.no_grad():
-        g_seq, b_seqs = pipeline.box_encoder(img_tensor, boxes_tensor)
-        b_seq = b_seqs[0]
-        g_summary = g_seq.mean(dim=1, keepdim=True) if pipeline.config.use_global_summary else None
-        text_emb_box = pipeline._prepare_text_embeddings(text_content, bbox=bbox)
-        s_prefix = 1 if g_summary is not None else 0
-        combined_seq = (
-            torch.cat([g_summary, b_seq, text_emb_box], dim=1)
-            if g_summary is not None
-            else torch.cat([b_seq, text_emb_box], dim=1)
-        )
-        box_start = s_prefix
-        box_end = s_prefix + b_seq.shape[1]
-
-    return [combined_seq], s_prefix, [box_start], [box_end]
-
-
 def prepare_triplet_sequences_for_llm(pipeline, image, text_content, pos_bbox, neg_bbox, device):
-    image = smart_resize(image, patch_size=pipeline.config.patch_size_resize)
+    with suppress_stdout():
+        image = smart_resize(image, patch_size=pipeline.config.patch_size_resize)
     img_tensor = pipeline.transform(image).unsqueeze(0).to(device=device, dtype=TRAINING_DTYPE)
-    triplet_boxes = [[0.0, 0.0, 1.0, 1.0], pos_bbox, neg_bbox]
-    boxes_tensor = torch.tensor([triplet_boxes], device=device, dtype=TRAINING_DTYPE)
+    visual_boxes = [pos_bbox, neg_bbox]
+    boxes_tensor = torch.tensor([visual_boxes], device=device, dtype=TRAINING_DTYPE)
 
     with torch.no_grad():
-        g_seq, b_seqs = pipeline.box_encoder(img_tensor, boxes_tensor)
+        with suppress_stdout():
+            g_seq, b_seqs = pipeline.box_encoder(img_tensor, boxes_tensor)
         g_summary = g_seq.mean(dim=1, keepdim=True) if pipeline.config.use_global_summary else None
-        s_prefix = 1 if g_summary is not None else 0
-        pipeline._build_text_token_cache(text_content)
+        visual_s_prefix = 1 if g_summary is not None else 0
 
-        seqs_list = []
-        s_box_starts = []
-        s_box_ends = []
-        text_bboxes = [None, pos_bbox, neg_bbox]
+    with torch.no_grad():
+        with suppress_stdout():
+            anchor_text_emb = pipeline._prepare_text_embeddings(text_content, bbox=None)
+    anchor_seq = anchor_text_emb.detach().requires_grad_(True)
 
-        for b_seq, text_bbox in zip(b_seqs, text_bboxes):
-            text_emb_box = pipeline._prepare_text_embeddings(text_content, bbox=text_bbox)
-            box_start = s_prefix
-            box_end = s_prefix + b_seq.shape[1]
-            combined_seq = (
-                torch.cat([g_summary, b_seq, text_emb_box], dim=1)
-                if g_summary is not None
-                else torch.cat([b_seq, text_emb_box], dim=1)
+    visual_seqs = []
+    visual_box_starts = []
+    visual_box_ends = []
+    for b_seq, text_bbox in zip(b_seqs, visual_boxes):
+        with torch.no_grad():
+            with suppress_stdout():
+                text_emb_box = pipeline._prepare_text_embeddings(text_content, bbox=text_bbox)
+        box_start = visual_s_prefix
+        box_end = visual_s_prefix + b_seq.shape[1]
+        if g_summary is not None:
+            combined_seq = torch.cat(
+                [g_summary.detach(), b_seq.detach(), text_emb_box.detach()],
+                dim=1,
             )
-            seqs_list.append(combined_seq)
-            s_box_starts.append(box_start)
-            s_box_ends.append(box_end)
+        else:
+            combined_seq = torch.cat([b_seq.detach(), text_emb_box.detach()], dim=1)
+        visual_seqs.append(combined_seq.detach().requires_grad_(True))
+        visual_box_starts.append(box_start)
+        visual_box_ends.append(box_end)
 
-    return seqs_list, s_prefix, s_box_starts, s_box_ends
+    return anchor_seq, visual_seqs, visual_s_prefix, visual_box_starts, visual_box_ends
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, metrics, checkpoint_dir=CHECKPOINT_DIR):
@@ -225,7 +227,7 @@ def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR):
     return latest if os.path.exists(state_path) and os.path.exists(adapter_path) else None
 
 
-def load_checkpoint(checkpoint_path, base_model, optimizer, scheduler, device):
+def load_checkpoint(checkpoint_path, base_model, lr, weight_decay, scheduler_t_max, device):
     adapter_path = os.path.join(checkpoint_path, "lora_adapter")
     state_path = os.path.join(checkpoint_path, "training_state.pt")
     model = PeftModel.from_pretrained(base_model, adapter_path, is_trainable=True)
@@ -233,19 +235,16 @@ def load_checkpoint(checkpoint_path, base_model, optimizer, scheduler, device):
     model.train()
 
     training_state = torch.load(state_path, map_location=device, weights_only=False)
-    new_optimizer = AdamW(
-        model.parameters(),
-        lr=optimizer.defaults["lr"],
-        weight_decay=optimizer.defaults["weight_decay"],
-    )
+    new_optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     new_optimizer.load_state_dict(training_state["optimizer_state_dict"])
 
-    if scheduler is not None and training_state.get("scheduler_state_dict") is not None:
-        scheduler.load_state_dict(training_state["scheduler_state_dict"])
+    new_scheduler = CosineAnnealingLR(new_optimizer, T_max=max(1, scheduler_t_max))
+    if training_state.get("scheduler_state_dict") is not None:
+        new_scheduler.load_state_dict(training_state["scheduler_state_dict"])
 
     start_epoch = training_state["epoch"] + 1
     prev_metrics = training_state.get("metrics", {})
-    return model, new_optimizer, start_epoch, prev_metrics
+    return model, new_optimizer, new_scheduler, start_epoch, prev_metrics
 
 
 class TripletMetrics:
@@ -363,6 +362,7 @@ def train_lora_triplet(args=None):
     lr = args.lr
     gradient_accumulation_steps = args.gradient_accumulation_steps
     triplet_margin = args.triplet_margin
+    weight_decay = 1e-4
 
     dataset = TripletUIDataset(data_path_or_list=args.dataset_path, data_root=args.data_root)
     dataloader = DataLoader(
@@ -376,20 +376,19 @@ def train_lora_triplet(args=None):
     )
 
     start_epoch = 0
+    scheduler_t_max = optimizer_steps_per_epoch(len(dataloader), gradient_accumulation_steps) * max(1, epochs)
     latest_ckpt = find_latest_checkpoint(str(checkpoint_dir))
     if latest_ckpt is not None:
         print(f"[*] Found checkpoint: {latest_ckpt}", flush=True)
-        tmp_optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=1e-4)
-        tmp_scheduler = CosineAnnealingLR(tmp_optimizer, T_max=epochs * len(dataloader))
-        pipeline.headless_llm, optimizer, start_epoch, prev_metrics = load_checkpoint(
-            latest_ckpt, pipeline.headless_llm, tmp_optimizer, tmp_scheduler, device
+        pipeline.headless_llm, optimizer, scheduler, start_epoch, prev_metrics = load_checkpoint(
+            latest_ckpt,
+            pipeline.headless_llm,
+            lr,
+            weight_decay,
+            scheduler_t_max,
+            device,
         )
         print_floating_dtype_summary("headless_llm", pipeline.headless_llm)
-        scheduler = CosineAnnealingLR(optimizer, T_max=epochs * len(dataloader))
-        state_path = os.path.join(latest_ckpt, "training_state.pt")
-        training_state = torch.load(state_path, map_location=device, weights_only=False)
-        if training_state.get("scheduler_state_dict") is not None:
-            scheduler.load_state_dict(training_state["scheduler_state_dict"])
         if prev_metrics:
             print(f"  [i] Previous loss: {prev_metrics.get('avg_loss', 'N/A')}", flush=True)
         if start_epoch >= epochs:
@@ -405,16 +404,16 @@ def train_lora_triplet(args=None):
         pipeline.headless_llm = force_bfloat16(pipeline.headless_llm)
         pipeline.headless_llm.train()
         print_floating_dtype_summary("headless_llm", pipeline.headless_llm)
-        optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=1e-4)
-        scheduler = CosineAnnealingLR(optimizer, T_max=epochs * len(dataloader))
+        optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = build_training_scheduler(optimizer, epochs, len(dataloader), gradient_accumulation_steps)
     else:
         print("[*] No checkpoint/adapter found. Starting from base weights.", flush=True)
         pipeline.headless_llm = get_peft_model(pipeline.headless_llm, lora_config)
         pipeline.headless_llm = force_bfloat16(pipeline.headless_llm)
         pipeline.headless_llm.print_trainable_parameters()
         print_floating_dtype_summary("headless_llm", pipeline.headless_llm)
-        optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=1e-4)
-        scheduler = CosineAnnealingLR(optimizer, T_max=epochs * len(dataloader))
+        optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = build_training_scheduler(optimizer, epochs, len(dataloader), gradient_accumulation_steps)
 
     criterion = nn.TripletMarginWithDistanceLoss(
         distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y, dim=-1),
@@ -443,7 +442,7 @@ def train_lora_triplet(args=None):
 
         for step, batch in enumerate(iterator):
             item = batch[0]
-            seqs, s_prefix, s_box_starts, s_box_ends = prepare_triplet_sequences_for_llm(
+            anchor_seq, visual_seqs, visual_s_prefix, visual_box_starts, visual_box_ends = prepare_triplet_sequences_for_llm(
                 pipeline,
                 item["image"],
                 item["anchor_text"],
@@ -451,15 +450,16 @@ def train_lora_triplet(args=None):
                 item["neg_bbox"],
                 device,
             )
-            triplet_outputs = pipeline.headless_llm(
-                seqs,
-                s_prefix=s_prefix,
-                s_box_starts=s_box_starts,
-                s_box_ends=s_box_ends,
+            anchor_outputs = pipeline.headless_llm([anchor_seq], s_prefix=0)
+            visual_outputs = pipeline.headless_llm(
+                visual_seqs,
+                s_prefix=visual_s_prefix,
+                s_box_starts=visual_box_starts,
+                s_box_ends=visual_box_ends,
             )
-            out_anchor = triplet_outputs[:, 0, :]
-            out_positive = triplet_outputs[:, 1, :]
-            out_negative = triplet_outputs[:, 2, :]
+            out_anchor = F.normalize(anchor_outputs[:, 0, :], dim=-1)
+            out_positive = F.normalize(visual_outputs[:, 0, :], dim=-1)
+            out_negative = F.normalize(visual_outputs[:, 1, :], dim=-1)
 
             loss = criterion(out_anchor, out_positive, out_negative) / gradient_accumulation_steps
             loss.backward()
