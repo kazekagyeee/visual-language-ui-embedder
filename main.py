@@ -112,14 +112,32 @@ class UIEmbedderPipeline:
     def _load_weights(self):
         t_init = time.time()
         # Using BFloat16 is recommended for Qwen2.5
+        # NOTE: convert to bfloat16 BEFORE wrapping with PeftModel
         try:
             self.box_encoder = self.box_encoder.bfloat16()
-            #self.headless_llm = self.headless_llm.bfloat16()
-            self.headless_llm = PeftModel.from_pretrained(self.headless_llm, 'training/output/lora_triplet_adapter')
+            self.headless_llm = self.headless_llm.bfloat16()
             self.token_embedding = self.token_embedding.bfloat16()
             print("[*] Converted models to BFloat16")
         except Exception as e:
             print(f"[!] BFloat16 not supported? {e}. Using float32.")
+
+        # Load LoRA adapter if it exists
+        import os as _os
+        _adapter_dir = _os.path.join(
+            _os.path.dirname(_os.path.abspath(__file__)),
+            "training", "output", "lora_triplet_adapter"
+        )
+        _adapter_cfg = _os.path.join(_adapter_dir, "adapter_config.json")
+        if _os.path.exists(_adapter_cfg):
+            try:
+                self.headless_llm = PeftModel.from_pretrained(
+                    self.headless_llm, _adapter_dir
+                )
+                print(f"[*] Loaded LoRA adapter from: {_adapter_dir}")
+            except Exception as e:
+                print(f"[!] Failed to load LoRA adapter: {e}. Continuing without adapter.")
+        else:
+            print(f"[!] No LoRA adapter found at: {_adapter_dir}. Continuing without adapter.")
 
         try:
             load_all_weights(

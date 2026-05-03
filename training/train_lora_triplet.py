@@ -5,8 +5,10 @@ import io
 import json
 import math
 import os
+import random
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -32,6 +34,28 @@ DEFAULT_DATASET_PATH = PROJECT_ROOT / "training" / "triplet_dataset_clean.json"
 CHECKPOINT_DIR = str(DEFAULT_OUTPUT_DIR / "checkpoints")
 FINAL_ADAPTER_DIR = str(DEFAULT_OUTPUT_DIR / "lora_triplet_adapter")
 TRAINING_DTYPE = torch.bfloat16
+
+# Maximum image side length during training.
+# ScreenSpot-v2 images reach 2360×1640 → ~19 000 ViT patches → OOM.
+# 672px → ~(48×48)/4 = 576 merged tokens per sequence, manageable on ≥8 GB VRAM.
+# Override with --max-image-size or env var MAX_TRAINING_IMAGE_SIZE.
+MAX_TRAINING_IMAGE_SIZE: int = int(os.environ.get("MAX_TRAINING_IMAGE_SIZE", "1280"))
+
+# ScreenSpot-v2: path to the FiftyOne samples.json in the HF cache
+_HF_CACHE_BASE = Path.home() / ".cache" / "huggingface" / "hub"
+_SS_SNAPSHOT_BASE = _HF_CACHE_BASE / "datasets--Voxel51--ScreenSpot-v2" / "snapshots"
+
+
+def _find_screenspot_snapshot() -> Path:
+    """Return the latest cached ScreenSpot-v2 snapshot directory."""
+    if _SS_SNAPSHOT_BASE.exists():
+        snaps = sorted(_SS_SNAPSHOT_BASE.iterdir())
+        if snaps:
+            return snaps[-1]
+    raise FileNotFoundError(
+        f"ScreenSpot-v2 snapshot not found in {_SS_SNAPSHOT_BASE}.\n"
+        "Run: python training/download_screenspot.py"
+    )
 
 
 def force_bfloat16(module):
@@ -72,6 +96,12 @@ def parse_args():
     data_root_env = os.environ.get("TRIPLET_DATA_ROOT")
 
     parser = argparse.ArgumentParser(description="Train LoRA adapter with triplet loss.")
+    parser.add_argument(
+        "--dataset-type",
+        choices=("json", "screenspot"),
+        default=os.environ.get("DATASET_TYPE", "screenspot"),
+        help="Dataset format: 'json' (legacy triplet_dataset.json) or 'screenspot' (ScreenSpot-v2).",
+    )
     parser.add_argument("--dataset-path", type=Path, default=dataset_path)
     parser.add_argument("--data-root", type=Path, default=Path(data_root_env) if data_root_env else None)
     parser.add_argument("--output-dir", type=Path, default=output_dir)
@@ -88,17 +118,38 @@ def parse_args():
     )
     parser.add_argument("--triplet-margin", type=float, default=float(os.environ.get("TRIPLET_MARGIN", "0.2")))
     parser.add_argument("--num-workers", type=int, default=int(os.environ.get("NUM_WORKERS", "0")))
-    parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "25")))
+    parser.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "1")))
+    parser.add_argument(
+        "--max-image-size",
+        type=int,
+        default=int(os.environ.get("MAX_TRAINING_IMAGE_SIZE", str(MAX_TRAINING_IMAGE_SIZE))),
+        help="Cap the longest image side to this many pixels before processing. "
+             "Prevents OOM on large screenshots (default: 672).",
+    )
     parser.add_argument(
         "--progress",
         choices=("auto", "tqdm", "plain", "off"),
         default=os.environ.get("PROGRESS", "auto"),
         help="Progress output mode. auto uses tqdm only for interactive terminals.",
     )
+    parser.add_argument(
+        "--screenspot-snapshot",
+        type=Path,
+        default=None,
+        help="Path to ScreenSpot-v2 snapshot dir (auto-detected from HF cache if not set).",
+    )
+    parser.add_argument(
+        "--screenspot-seed",
+        type=int,
+        default=int(os.environ.get("SCREENSPOT_SEED", "42")),
+        help="Random seed for ScreenSpot-v2 negative sampling.",
+    )
     return parser.parse_args()
 
 
 class TripletUIDataset(Dataset):
+    """Legacy JSON-based triplet dataset (triplet_dataset.json)."""
+
     def __init__(self, data_path_or_list, data_root=None, load_images=True):
         self.data_root = Path(data_root).resolve() if data_root else None
         self.dataset_dir = None
@@ -158,43 +209,213 @@ class TripletUIDataset(Dataset):
         }
 
 
-def prepare_triplet_sequences_for_llm(pipeline, image, text_content, pos_bbox, neg_bbox, device):
+class ScreenSpotV2Dataset(Dataset):
+    """Dataset adapter for ScreenSpot-v2 (Voxel51/ScreenSpot-v2 on HuggingFace).
+
+    The dataset is stored as a FiftyOne export:
+      <snapshot>/samples.json  – all annotations
+      <snapshot>/data/*.png    – screenshot images
+
+    Triplet construction:
+      anchor   = instruction text
+      positive = annotated bounding box (action_detection.bounding_box)
+      negative = a bbox from a *different* annotation on the same screen
+                 (same scene-UUID prefix), falling back to a random bbox
+                 from a different image if only one annotation exists per scene.
+
+    Bounding boxes are returned in absolute pixel coords [x1, y1, x2, y2].
+    """
+
+    def __init__(self, snapshot_dir=None, seed: int = 42, load_images: bool = True):
+        self.load_images = load_images
+        self.rng = random.Random(seed)
+
+        # Locate snapshot
+        if snapshot_dir is None:
+            snap = _find_screenspot_snapshot()
+        else:
+            snap = Path(snapshot_dir).resolve()
+        self.snap = snap
+        self.data_dir = snap / "data"
+
+        # Also check for local copy in training/screenspot_v2/data/
+        local_data = PROJECT_ROOT / "training" / "screenspot_v2" / "data"
+        if local_data.exists() and any(local_data.iterdir()):
+            self.data_dir = local_data
+            print(f"  [ScreenSpot] Using local image copy: {self.data_dir}", flush=True)
+
+        print(f"  [ScreenSpot] Loading samples.json from {snap} …", flush=True)
+        with open(snap / "samples.json", "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        all_samples = raw.get("samples", [])
+
+        # Parse into records
+        records = []
+        skipped = 0
+        for s in all_samples:
+            filepath = s.get("filepath", "")
+            instr    = s.get("instruction", "").strip()
+            ad       = s.get("action_detection", {})
+            meta     = s.get("metadata", {})
+            width    = meta.get("width", 0)
+            height   = meta.get("height", 0)
+            bbox_rel = ad.get("bounding_box")  # [x, y, w, h] in 0..1
+
+            if not instr or not bbox_rel or not filepath or width == 0 or height == 0:
+                skipped += 1
+                continue
+
+            # Convert to absolute pixel xyxy
+            x1 = bbox_rel[0] * width
+            y1 = bbox_rel[1] * height
+            x2 = (bbox_rel[0] + bbox_rel[2]) * width
+            y2 = (bbox_rel[1] + bbox_rel[3]) * height
+            bbox_abs = [x1, y1, x2, y2]
+
+            img_name = Path(filepath).name  # e.g. mobile_uuid_0.png
+            # scene key = everything before the trailing _<digit(s)>
+            stem = img_name.replace(".png", "")
+            parts = stem.rsplit("_", 1)
+            scene_id = parts[0] if (len(parts) == 2 and parts[1].isdigit()) else stem
+
+            records.append({
+                "img_name": img_name,
+                "scene_id": scene_id,
+                "text":     instr,
+                "bbox_abs": bbox_abs,
+                "width":    width,
+                "height":   height,
+            })
+
+        print(f"  [ScreenSpot] Parsed {len(records)} valid records, skipped {skipped}", flush=True)
+
+        # Build scene → [record_index] map for negative sampling
+        scene_to_indices: dict[str, list[int]] = defaultdict(list)
+        for i, r in enumerate(records):
+            scene_to_indices[r["scene_id"]].append(i)
+
+        # Pre-compute negatives (stable across epochs thanks to fixed seed)
+        self.samples = []
+        for i, rec in enumerate(records):
+            same = [j for j in scene_to_indices[rec["scene_id"]] if j != i]
+            if same:
+                neg_idx = self.rng.choice(same)
+            else:
+                other_keys = [k for k in scene_to_indices if k != rec["scene_id"]]
+                if not other_keys:
+                    continue  # edge case
+                neg_scene = self.rng.choice(other_keys)
+                neg_idx   = self.rng.choice(scene_to_indices[neg_scene])
+
+            self.samples.append({
+                "img_name":    rec["img_name"],
+                "anchor_text": rec["text"],
+                "pos_bbox":    rec["bbox_abs"],
+                "neg_bbox":    records[neg_idx]["bbox_abs"],
+            })
+
+        print(f"  [ScreenSpot] Built {len(self.samples)} triplets", flush=True)
+
+    # ------------------------------------------------------------------
+    def _load_image(self, img_name: str) -> Image.Image:
+        candidates = [
+            self.data_dir / img_name,
+            self.snap / "data" / img_name,
+        ]
+        for p in candidates:
+            if p.exists():
+                try:
+                    return Image.open(p).convert("RGB")
+                except Exception:
+                    pass
+        # Fallback blank image
+        return Image.new("RGB", (224, 224), (128, 128, 128))
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict:
+        s = self.samples[idx]
+        image = self._load_image(s["img_name"]) if self.load_images else None
+        return {
+            "image":       image,
+            "anchor_text": s["anchor_text"],
+            "pos_bbox":    s["pos_bbox"],
+            "neg_bbox":    s["neg_bbox"],
+            "sample_idx":  idx,
+        }
+
+
+def prepare_triplet_sequences_for_llm(
+    pipeline, image, text_content, pos_bbox, neg_bbox, device,
+    max_img_size: int = MAX_TRAINING_IMAGE_SIZE,
+):
+    """Build anchor / visual sequences for the triplet forward pass.
+
+    Args:
+        max_img_size: Cap the longest image side to this many pixels *before*
+            patch-aligning.  Prevents OOM on large screenshots.
+            Bounding boxes are rescaled proportionally.
+    """
+    # ── 1. Resize image to training budget ──────────────────────────────
+    orig_w, orig_h = image.size
+    longest = max(orig_w, orig_h)
+    if longest > max_img_size:
+        scale  = max_img_size / longest
+        new_w  = max(int(orig_w * scale), 1)
+        new_h  = max(int(orig_h * scale), 1)
+        image  = image.resize((new_w, new_h), Image.BICUBIC)
+        # Rescale absolute-pixel bboxes to match the resized image
+        pos_bbox = [c * scale for c in pos_bbox]
+        neg_bbox = [c * scale for c in neg_bbox]
+    else:
+        scale = 1.0
+
     with suppress_stdout():
         image = smart_resize(image, patch_size=pipeline.config.patch_size_resize)
-    img_tensor = pipeline.transform(image).unsqueeze(0).to(device=device, dtype=TRAINING_DTYPE)
+
+    resized_w, resized_h = image.size
+
+    img_tensor   = pipeline.transform(image).unsqueeze(0).to(device=device, dtype=TRAINING_DTYPE)
     visual_boxes = [pos_bbox, neg_bbox]
     boxes_tensor = torch.tensor([visual_boxes], device=device, dtype=TRAINING_DTYPE)
 
     with torch.no_grad():
         with suppress_stdout():
             g_seq, b_seqs = pipeline.box_encoder(img_tensor, boxes_tensor)
-        g_summary = g_seq.mean(dim=1, keepdim=True) if pipeline.config.use_global_summary else None
+        g_summary      = g_seq.mean(dim=1, keepdim=True) if pipeline.config.use_global_summary else None
         visual_s_prefix = 1 if g_summary is not None else 0
+
+    # Free raw image tensor immediately — not needed further
+    del img_tensor, boxes_tensor
 
     with torch.no_grad():
         with suppress_stdout():
             anchor_text_emb = pipeline._prepare_text_embeddings(text_content, bbox=None)
     anchor_seq = anchor_text_emb.detach().requires_grad_(True)
+    del anchor_text_emb
 
-    visual_seqs = []
+    visual_seqs       = []
     visual_box_starts = []
-    visual_box_ends = []
+    visual_box_ends   = []
     for b_seq, text_bbox in zip(b_seqs, visual_boxes):
         with torch.no_grad():
             with suppress_stdout():
                 text_emb_box = pipeline._prepare_text_embeddings(text_content, bbox=text_bbox)
         box_start = visual_s_prefix
-        box_end = visual_s_prefix + b_seq.shape[1]
+        box_end   = visual_s_prefix + b_seq.shape[1]
         if g_summary is not None:
             combined_seq = torch.cat(
-                [g_summary.detach(), b_seq.detach(), text_emb_box.detach()],
-                dim=1,
+                [g_summary.detach(), b_seq.detach(), text_emb_box.detach()], dim=1,
             )
         else:
             combined_seq = torch.cat([b_seq.detach(), text_emb_box.detach()], dim=1)
+        del text_emb_box
         visual_seqs.append(combined_seq.detach().requires_grad_(True))
         visual_box_starts.append(box_start)
         visual_box_ends.append(box_end)
+
+    del g_seq, b_seqs, g_summary
 
     return anchor_seq, visual_seqs, visual_s_prefix, visual_box_starts, visual_box_ends
 
@@ -364,7 +585,20 @@ def train_lora_triplet(args=None):
     triplet_margin = args.triplet_margin
     weight_decay = 1e-4
 
-    dataset = TripletUIDataset(data_path_or_list=args.dataset_path, data_root=args.data_root)
+    # -----------------------------------------------------------------------
+    # Dataset selection
+    # -----------------------------------------------------------------------
+    if args.dataset_type == "screenspot":
+        print("[*] Using ScreenSpot-v2 dataset.", flush=True)
+        snapshot_dir = args.screenspot_snapshot or None
+        dataset = ScreenSpotV2Dataset(
+            snapshot_dir=snapshot_dir,
+            seed=args.screenspot_seed,
+        )
+    else:
+        print(f"[*] Using JSON triplet dataset: {args.dataset_path}", flush=True)
+        dataset = TripletUIDataset(data_path_or_list=args.dataset_path, data_root=args.data_root)
+
     dataloader = DataLoader(
         dataset,
         batch_size=1,
@@ -431,8 +665,11 @@ def train_lora_triplet(args=None):
 
     for epoch in range(start_epoch, epochs):
         epoch_start_time = time.time()
+        step_times: list = []
         metrics = TripletMetrics(margin=triplet_margin)
         optimizer.zero_grad()
+
+        print(f"\n[*] Epoch {epoch + 1}/{epochs} — {len(dataloader)} steps", flush=True)
 
         iterator = (
             tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="sample", dynamic_ncols=True)
@@ -441,7 +678,25 @@ def train_lora_triplet(args=None):
         )
 
         for step, batch in enumerate(iterator):
+            step_t0 = time.time()
             item = batch[0]
+
+            # ── per-step header (plain/off modes only) ───────────────────
+            if not use_tqdm and args.progress != "off":
+                elapsed_so_far = step_t0 - epoch_start_time
+                avg_step_prev  = (elapsed_so_far / step) if step > 0 else 0.0
+                eta_sec_prev   = avg_step_prev * (len(dataloader) - step)
+                eta_str        = f"eta={eta_sec_prev/3600:.2f}h" if step > 0 else "eta=?"
+                instr_preview  = item["anchor_text"][:45].replace("\n", " ")
+                print(
+                    f"\n  >> step {step + 1}/{len(dataloader)} "
+                    f"(elapsed={elapsed_so_far:.0f}s {eta_str})"
+                    f"\n     text: \"{instr_preview}\"",
+                    flush=True,
+                )
+
+            # ── prepare sequences ────────────────────────────────────────
+            t0 = time.time()
             anchor_seq, visual_seqs, visual_s_prefix, visual_box_starts, visual_box_ends = prepare_triplet_sequences_for_llm(
                 pipeline,
                 item["image"],
@@ -449,50 +704,105 @@ def train_lora_triplet(args=None):
                 item["pos_bbox"],
                 item["neg_bbox"],
                 device,
+                max_img_size=args.max_image_size,
             )
+            t_prepare = time.time() - t0
+            if not use_tqdm and args.progress != "off":
+                n_vis_tok = sum(s.shape[1] for s in visual_seqs)
+                print(f"     prepare={t_prepare:.2f}s  vis_tok={n_vis_tok}", end="", flush=True)
+
+            # ── anchor forward ───────────────────────────────────────────
+            t0 = time.time()
             anchor_outputs = pipeline.headless_llm([anchor_seq], s_prefix=0)
+            t_anchor = time.time() - t0
+            if not use_tqdm and args.progress != "off":
+                print(f"  anchor_fwd={t_anchor:.2f}s", end="", flush=True)
+
+            # ── visual forward ───────────────────────────────────────────
+            t0 = time.time()
             visual_outputs = pipeline.headless_llm(
                 visual_seqs,
                 s_prefix=visual_s_prefix,
                 s_box_starts=visual_box_starts,
                 s_box_ends=visual_box_ends,
             )
-            out_anchor = F.normalize(anchor_outputs[:, 0, :], dim=-1)
+            t_visual = time.time() - t0
+            if not use_tqdm and args.progress != "off":
+                print(f"  visual_fwd={t_visual:.2f}s", end="", flush=True)
+
+            out_anchor   = F.normalize(anchor_outputs[:, 0, :], dim=-1)
             out_positive = F.normalize(visual_outputs[:, 0, :], dim=-1)
             out_negative = F.normalize(visual_outputs[:, 1, :], dim=-1)
 
+            # Free large activation tensors before backward
+            del anchor_outputs, visual_outputs
+            del anchor_seq, visual_seqs
+
+            # ── loss + backward ──────────────────────────────────────────
+            t0 = time.time()
             loss = criterion(out_anchor, out_positive, out_negative) / gradient_accumulation_steps
             loss.backward()
+            t_bwd = time.time() - t0
+            if not use_tqdm and args.progress != "off":
+                print(f"  bwd={t_bwd:.2f}s", flush=True)
 
+            # ── optimizer step ───────────────────────────────────────────
             if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(dataloader):
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
             step_loss = loss.item() * gradient_accumulation_steps
+            del loss  # free computation graph immediately
+
+            step_dt = time.time() - step_t0
+            # Cap history to last 50 steps to bound memory usage
+            step_times.append(step_dt)
+            if len(step_times) > 50:
+                step_times.pop(0)
+
             metrics.update(out_anchor.detach(), out_positive.detach(), out_negative.detach(), step_loss)
+            del out_anchor, out_positive, out_negative
+
+            # ── explicit CUDA memory release ─────────────────────────────
+            if str(device).startswith("cuda"):
+                torch.cuda.empty_cache()
 
             if metrics.count > 0:
                 m = metrics.compute()
+                avg_step_t = sum(step_times) / len(step_times)
                 if use_tqdm:
+                    mem_str = ""
+                    if str(device).startswith("cuda"):
+                        used = torch.cuda.memory_reserved() / 1024 ** 3
+                        mem_str = f"{used:.1f}GB"
                     iterator.set_postfix(
                         {
-                            "loss": f"{m['avg_loss']:.4f}",
-                            "acc": f"{m['triplet_accuracy'] * 100:.0f}%",
-                            "gap": f"{m['cos_sim_gap']:+.3f}",
+                            "loss":  f"{m['avg_loss']:.4f}",
+                            "acc":   f"{m['triplet_accuracy'] * 100:.0f}%",
+                            "gap":   f"{m['cos_sim_gap']:+.3f}",
+                            "s/it":  f"{avg_step_t:.1f}s",
+                            "vram":  mem_str,
                         }
                     )
                 elif use_plain_progress and args.log_every > 0 and (
                     (step + 1) % args.log_every == 0 or (step + 1) == len(dataloader)
                 ):
                     elapsed = time.time() - epoch_start_time
-                    samples_per_sec = (step + 1) / max(elapsed, 1e-9)
-                    eta_sec = (len(dataloader) - step - 1) / max(samples_per_sec, 1e-9)
+                    eta_sec = avg_step_t * (len(dataloader) - step - 1)
+                    cos_p   = m["avg_cos_sim_positive"]
+                    cos_n   = m["avg_cos_sim_negative"]
+                    mem_str = ""
+                    if str(device).startswith("cuda"):
+                        used_gb  = torch.cuda.memory_reserved() / 1024 ** 3
+                        total_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+                        mem_str  = f"  vram={used_gb:.1f}/{total_gb:.1f}GB"
                     print(
-                        f"Epoch {epoch + 1}/{epochs} step {step + 1}/{len(dataloader)} "
-                        f"loss={m['avg_loss']:.4f} acc={m['triplet_accuracy'] * 100:.0f}% "
-                        f"gap={m['cos_sim_gap']:+.3f} {samples_per_sec:.3f} sample/s "
-                        f"eta={eta_sec / 3600:.1f}h",
+                        f"  ┌ Ep {epoch+1}/{epochs}  step {step+1}/{len(dataloader)}{mem_str}\n"
+                        f"  │ loss={m['avg_loss']:.5f}  acc={m['triplet_accuracy']*100:.1f}%  "
+                        f"gap={m['cos_sim_gap']:+.4f}  viol={m['margin_violation_rate']*100:.1f}%\n"
+                        f"  │ cos(+)={cos_p:.4f}  cos(-)={cos_n:.4f}\n"
+                        f"  └ {avg_step_t:.1f}s/step  elapsed={elapsed:.0f}s  eta={eta_sec/3600:.2f}h",
                         flush=True,
                     )
 
