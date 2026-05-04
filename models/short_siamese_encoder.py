@@ -1,94 +1,91 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Dict
-
+﻿from dataclasses import dataclass
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.nn.functional as F
 
 
 @dataclass
 class ShortSiameseConfig:
-    text_input_dim: int = 3584
-    image_input_dim: int = 3584
-    short_dim: int = 128
-    hidden_dim: int = 512
+    input_dim: int = 4
+    hidden_dim: int = 16
+    output_dim: int = 8
     dropout: float = 0.1
 
 
 class ProjectionEncoder(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
+            nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, output_dim),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x):
         return F.normalize(self.net(x.float()), dim=-1)
 
 
 class ShortSiameseEncoder(nn.Module):
-    """Dual encoder для text/image vectors + classifier head.
-
-    Вход: длинные Qwen/teacher embeddings или признаки другой модели.
-    Выход: короткие text/image embeddings и score схожести.
-    """
-
     def __init__(self, config: ShortSiameseConfig):
         super().__init__()
         self.config = config
         self.text_encoder = ProjectionEncoder(
-            config.text_input_dim, config.hidden_dim, config.short_dim, config.dropout
+            config.input_dim, config.hidden_dim, config.output_dim, config.dropout
         )
         self.image_encoder = ProjectionEncoder(
-            config.image_input_dim, config.hidden_dim, config.short_dim, config.dropout
+            config.input_dim, config.hidden_dim, config.output_dim, config.dropout
         )
-        fusion_dim = config.short_dim * 4
-        self.similarity_head = nn.Sequential(
-            nn.Linear(fusion_dim, config.hidden_dim),
-            nn.LayerNorm(config.hidden_dim),
-            nn.GELU(),
-            nn.Dropout(config.dropout),
+        self.classifier = nn.Sequential(
+            nn.Linear(config.output_dim * 4, config.hidden_dim),
+            nn.ReLU(),
             nn.Linear(config.hidden_dim, 1),
         )
 
-    def encode_text(self, text_vec: torch.Tensor) -> torch.Tensor:
+    def encode_text(self, text_vec):
         return self.text_encoder(text_vec)
 
-    def encode_image(self, image_vec: torch.Tensor) -> torch.Tensor:
+    def encode_image(self, image_vec):
         return self.image_encoder(image_vec)
 
-    def fuse(self, text_short: torch.Tensor, image_short: torch.Tensor) -> torch.Tensor:
-        return torch.cat(
-            [text_short, image_short, torch.abs(text_short - image_short), text_short * image_short],
+    def forward(self, text_vec, image_vec):
+        text_short = self.encode_text(text_vec)
+        image_short = self.encode_image(image_vec)
+
+        features = torch.cat(
+            [
+                text_short,
+                image_short,
+                torch.abs(text_short - image_short),
+                text_short * image_short,
+            ],
             dim=-1,
         )
 
-    def forward(self, text_vec: torch.Tensor, image_vec: torch.Tensor) -> Dict[str, torch.Tensor]:
-        text_short = self.encode_text(text_vec)
-        image_short = self.encode_image(image_vec)
-        logits = self.similarity_head(self.fuse(text_short, image_short)).squeeze(-1)
-        cosine = F.cosine_similarity(text_short, image_short, dim=-1)
+        logit = self.classifier(features).squeeze(-1)
+        score = torch.sigmoid(logit)
+
         return {
             "text_short": text_short,
             "image_short": image_short,
-            "logits": logits,
-            "score": torch.sigmoid(logits),
-            "cosine": cosine,
+            "logit": logit,
+            "score": score,
         }
 
-    def save(self, path: str) -> None:
-        torch.save({"config": self.config.__dict__, "state_dict": self.state_dict()}, path)
+    def save(self, path):
+        torch.save(
+            {
+                "config": self.config.__dict__,
+                "state_dict": self.state_dict(),
+            },
+            path,
+        )
 
     @classmethod
-    def load(cls, path: str, map_location: str | torch.device = "cpu") -> "ShortSiameseEncoder":
+    def load(cls, path, map_location="cpu"):
         payload = torch.load(path, map_location=map_location)
-        model = cls(ShortSiameseConfig(**payload["config"]))
+        config = ShortSiameseConfig(**payload["config"])
+        model = cls(config)
         model.load_state_dict(payload["state_dict"])
         model.eval()
         return model

@@ -1,30 +1,18 @@
-seed: 42
-
-data:
+﻿data:
   train_pairs: data/pairs.jsonl
-  val_pairs: data/pairs_val.jsonl
-  reference_items: data/reference_items.jsonl
+  index_items: data/index_items.jsonl
 
 model:
-  text_input_dim: 3584
-  image_input_dim: 3584
-  short_dim: 128
-  hidden_dim: 512
+  input_dim: 4
+  hidden_dim: 16
+  output_dim: 8
   dropout: 0.1
 
 training:
-  batch_size: 64
-  epochs: 10
-  lr: 0.0003
-  weight_decay: 0.00001
-  contrastive_weight: 0.25
-  bce_weight: 1.0
-  margin: 0.3
-  device: auto
-  checkpoint_dir: checkpoints/short_siamese
+  epochs: 20
+  batch_size: 16
+  lr: 0.001
 
-retrieval:
-  index_path: indexes/short_vectors.faiss
-  numpy_index_path: indexes/short_vectors.npy
-  metadata_path: indexes/metadata.jsonl
-  top_k: 10
+paths:
+  checkpoint: checkpoints/short_siamese/best.pt
+  index: indexes/short_index.json

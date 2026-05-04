@@ -4,7 +4,19 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="fef4a061-7818-480c-aacf-f6c0457188fa" name="Changes" comment="" />
+    <list default="true" id="fef4a061-7818-480c-aacf-f6c0457188fa" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/data_source/instruction.pdf" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/notepad scripts/make_pairs_from_pdf.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/configs/short_siamese.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/configs/short_siamese.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/models/short_siamese_encoder.py" beforeDir="false" afterPath="$PROJECT_DIR$/models/short_siamese_encoder.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rag/streamlit_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/rag/streamlit_app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/retrieval/build_short_index.py" beforeDir="false" afterPath="$PROJECT_DIR$/retrieval/build_short_index.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/retrieval/search_short_index.py" beforeDir="false" afterPath="$PROJECT_DIR$/retrieval/search_short_index.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/training/pair_dataset.py" beforeDir="false" afterPath="$PROJECT_DIR$/training/pair_dataset.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/training/train_short_siamese.py" beforeDir="false" afterPath="$PROJECT_DIR$/training/train_short_siamese.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -20,21 +32,21 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
-  <component name="GitHubPullRequestSearchHistory"><![CDATA[{
-  "lastFilter": {
-    "state": "OPEN",
-    "assignee": "kriskriskris0"
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;kriskriskris0&quot;
   }
-}]]></component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/kazekagyeee/visual-language-ui-embedder.git",
-    "accountId": "6bf10806-2b8e-45a4-8997-f92972af2ca3"
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/kazekagyeee/visual-language-ui-embedder.git&quot;,
+    &quot;accountId&quot;: &quot;6bf10806-2b8e-45a4-8997-f92972af2ca3&quot;
   }
-}]]></component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 5
-}]]></component>
+}</component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 5
+}</component>
   <component name="ProjectId" id="3Cr2NWsdBLWevXA3AZd98e0tOJF" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -43,6 +55,7 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "feature/siamese-short-crossmodal-embeddings",
     "last_opened_file_path": "C:/Users/nasty/PycharmProjects/visual-language-ui-embedder/pdf",
     "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
   }
@@ -52,7 +65,11 @@
       <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder\pdf" />
     </key>
     <key name="MoveFile.RECENT_KEYS">
-      <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder\tests_smoke\images" />
+      <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder\data_source" />
+      <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder" />
+      <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder\training" />
+      <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder\scripts" />
+      <recent name="C:\Users\nasty\PycharmProjects\visual-language-ui-embedder\retrieval" />
     </key>
   </component>
   <component name="SharedIndexes">
