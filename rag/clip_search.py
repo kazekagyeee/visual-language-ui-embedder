@@ -41,16 +41,34 @@ class ClipImageSearcher:
 
         images = []
         kept_items = []
+        seen_crops = set()
 
         for item in source_items:
-            crop_path = Path(item.get("visual_crop_image", item["crop_image"]))
+            crop_candidates = item.get("target_crop_images") or []
 
-            if not crop_path.exists():
-                continue
+            if not crop_candidates:
+                crop_candidates = [item.get("crop_image")]
 
-            image = Image.open(crop_path).convert("RGB")
-            images.append(image)
-            kept_items.append(item)
+            for crop in crop_candidates:
+                if not crop:
+                    continue
+
+                crop_path = Path(crop)
+
+                if not crop_path.exists():
+                    continue
+
+                if str(crop_path) in seen_crops:
+                    continue
+
+                seen_crops.add(str(crop_path))
+
+                image = Image.open(crop_path).convert("RGB")
+                images.append(image)
+
+                new_item = dict(item)
+                new_item["clip_crop_image"] = str(crop_path).replace("\\", "/")
+                kept_items.append(new_item)
 
         embeddings = self.model.encode(
             images,
