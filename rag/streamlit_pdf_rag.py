@@ -1,41 +1,33 @@
 ﻿# -*- coding: utf-8 -*-
 
-import json
 from pathlib import Path
 
-import numpy as np
 import streamlit as st
 from PIL import Image, ImageDraw
-from sentence_transformers import SentenceTransformer
+
+from rag.answer_engine import AnswerEngine
+from rag.hybrid_search import HybridSearcher
 
 
-RAG_DIR = Path("data/pdf_rag")
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 ZOOM = 2.0
 
 
 @st.cache_resource
-def load_model():
-    return SentenceTransformer(MODEL_NAME)
+def load_searcher():
+    return HybridSearcher()
 
 
-@st.cache_data
-def load_index():
-    items = []
-    with open(RAG_DIR / "items.jsonl", "r", encoding="utf-8") as f:
-        for line in f:
-            items.append(json.loads(line))
-
-    embeddings = np.load(RAG_DIR / "embeddings.npy")
-    return items, embeddings
+@st.cache_resource
+def load_llm():
+    return AnswerEngine()
 
 
-def draw_bbox_on_page(page_path, bbox, zoom=ZOOM):
+def draw_bbox_on_page(page_path, bbox):
     img = Image.open(page_path).convert("RGB")
     draw = ImageDraw.Draw(img)
 
     x0, y0, x1, y1 = bbox
-    box = [x0 * zoom, y0 * zoom, x1 * zoom, y1 * zoom]
+    box = [x0 * ZOOM, y0 * ZOOM, x1 * ZOOM, y1 * ZOOM]
 
     for i in range(6):
         draw.rectangle(
@@ -46,34 +38,79 @@ def draw_bbox_on_page(page_path, bbox, zoom=ZOOM):
     return img
 
 
-def search(query, top_k):
-    model = load_model()
-    items, embeddings = load_index()
+def build_context(results):
+    parts = []
 
-    query_vec = model.encode([query], normalize_embeddings=True)[0]
-    scores = embeddings @ query_vec
+    for result in results:
+        item = result["item"]
+        parts.append(
+            f"[Страница {item['page']}, блок {item['block_id']}]\n"
+            f"{item['text']}"
+        )
 
-    top_ids = np.argsort(scores)[::-1][:top_k]
-    return [(float(scores[idx]), items[int(idx)]) for idx in top_ids]
+    return "\n\n---\n\n".join(parts)
 
 
-st.set_page_config(page_title="PDF RAG + Highlight", layout="wide")
+st.set_page_config(page_title="PDF Hybrid RAG", layout="wide")
 
-st.title("PDF RAG + выделение найденного блока")
-st.caption("Поиск идет по текстовым блокам PDF. Для каждого результата показывается вся страница с выделенным найденным блоком.")
+st.title("PDF Hybrid RAG: ответ + страницы с выделением")
+st.caption("Hybrid search = semantic embeddings + BM25 по точным словам. Найденный блок подсвечивается на полной странице.")
 
 query = st.text_input("Вопрос", "как создать заявку на контроль")
-top_k = st.slider("Сколько результатов показать", 1, 10, 5)
+
+col_settings_1, col_settings_2, col_settings_3 = st.columns(3)
+
+with col_settings_1:
+    top_k = st.slider("Сколько блоков брать", 1, 12, 6)
+
+with col_settings_2:
+    alpha = st.slider(
+        "Вес semantic search",
+        0.0,
+        1.0,
+        0.65,
+        0.05,
+        help="0 = только BM25, 1 = только embeddings",
+    )
+
+with col_settings_3:
+    generate_answer = st.checkbox("Генерировать ответ LLM", value=True)
 
 if st.button("Искать"):
-    results = search(query, top_k)
-    context_parts = []
+    searcher = load_searcher()
+    results = searcher.search(query, top_k=top_k, alpha=alpha)
 
-    for score, item in results:
+    context = build_context(results)
+
+    if generate_answer:
+        st.subheader("Ответ по инструкции")
+
+        with st.spinner("Генерирую ответ по найденным страницам..."):
+            llm = load_llm()
+            answer = llm.generate(query, context)
+
+        st.markdown(answer)
+
+    st.subheader("Найденные источники")
+
+    pages = sorted(set(result["item"]["page"] for result in results))
+    st.info("Использованные страницы: " + ", ".join(map(str, pages)))
+
+    for result in results:
+        item = result["item"]
+
         st.divider()
-        st.subheader(f"Страница {item['page']} · блок {item['block_id']} · score={score:.4f}")
+        st.markdown(
+            f"### Страница {item['page']} · блок {item['block_id']} · "
+            f"hybrid={result['score']:.4f}"
+        )
 
-        col1, col2 = st.columns([1.4, 1])
+        st.caption(
+            f"semantic={result['dense_score']:.4f} · "
+            f"bm25={result['bm25_score']:.4f}"
+        )
+
+        col1, col2 = st.columns([1.5, 1])
 
         with col1:
             page_path = Path(item["page_image"])
@@ -86,23 +123,24 @@ if st.button("Искать"):
                     use_column_width=True,
                 )
             else:
-                st.warning(f"Страница не найдена: {page_path}")
+                st.warning(f"Файл страницы не найден: {page_path}")
 
         with col2:
-            st.markdown("### Найденный текст")
+            st.markdown("#### Текст блока")
             st.write(item["text"])
 
             with st.expander("Технические данные"):
                 st.json({
                     "page": item["page"],
                     "block_id": item["block_id"],
-                    "score": score,
+                    "hybrid_score": result["score"],
+                    "semantic_score": result["dense_score"],
+                    "bm25_score": result["bm25_score"],
                     "bbox": item["bbox"],
                     "page_image": item["page_image"],
+                    "crop_image": item.get("crop_image"),
                 })
 
-        context_parts.append(f"[Страница {item['page']}]\n{item['text']}")
-
     st.divider()
-    st.subheader("Контекст для RAG")
-    st.text_area("Найденный контекст", "\n\n---\n\n".join(context_parts), height=350)
+    st.subheader("Контекст, переданный в LLM")
+    st.text_area("Контекст", context, height=320)
