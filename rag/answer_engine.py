@@ -1,53 +1,54 @@
 ﻿# -*- coding: utf-8 -*-
 
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+import re
+
+
+def normalize_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"\[страница\s+\d+,\s*блок\s*\d+\]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 class AnswerEngine:
-    def __init__(self, model_name="Qwen/Qwen2.5-1.5B-Instruct"):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-        ).to(self.device)
+    def __init__(self, model_name=None):
+        pass
 
     def generate(self, question: str, context: str) -> str:
-        prompt = f"""
-Ты помощник по инструкции 1С/ERP.
+        blocks = [b.strip() for b in context.split("---") if b.strip()]
 
-Отвечай СТРОГО по контексту.
-Не выдумывай.
-Если данных не хватает, напиши: "В найденном контексте этого нет".
+        unique_blocks = []
+        seen = set()
 
-Формат ответа:
-1. Короткий ответ.
-2. Шаги.
-3. Где смотреть: страницы из контекста.
+        for block in blocks:
+            key = normalize_text(block)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_blocks.append(block)
 
-Вопрос:
-{question}
+        if not unique_blocks:
+            return "В найденном контексте нет подходящей информации."
 
-Контекст:
-{context}
+        pages = []
+        answer = []
 
-Ответ:
-"""
+        answer.append("### Короткий ответ")
+        answer.append("Нашлись следующие релевантные фрагменты инструкции:")
 
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        answer.append("\n### Найденные шаги / фрагменты")
 
-        outputs = self.model.generate(
-            **inputs,
-            max_new_tokens=350,
-            do_sample=False,
-            pad_token_id=self.tokenizer.eos_token_id,
-        )
+        for i, block in enumerate(unique_blocks[:4], start=1):
+            page_match = re.search(r"Страница\s+(\d+)", block)
+            if page_match:
+                pages.append(page_match.group(1))
 
-        full_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            text = re.sub(r"\[Страница\s+\d+,\s*блок\s*\d+\]", "", block).strip()
+            answer.append(f"\n**{i}.** {text}")
 
-        if "Ответ:" in full_text:
-            return full_text.split("Ответ:", 1)[-1].strip()
+        if pages:
+            pages = sorted(set(pages), key=lambda x: int(x))
+            answer.append("\n### Где смотреть")
+            answer.append("Страницы: " + ", ".join(pages))
 
-        return full_text.strip()
+        return "\n".join(answer)

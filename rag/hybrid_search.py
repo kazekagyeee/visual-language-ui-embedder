@@ -33,18 +33,16 @@ class HybridSearcher:
         corpus_tokens = [tokenize(item["text"]) for item in self.items]
         self.bm25 = BM25Okapi(corpus_tokens)
 
-    def search(self, query: str, top_k: int = 5, alpha: float = 0.65):
+    def search(self, query: str, top_k: int = 6, alpha: float = 0.65):
         query_vec = self.model.encode([query], normalize_embeddings=True)[0]
         dense_scores = self.embeddings @ query_vec
 
-        query_tokens = tokenize(query)
-        sparse_scores = np.array(self.bm25.get_scores(query_tokens), dtype=np.float32)
+        sparse_scores = np.array(self.bm25.get_scores(tokenize(query)), dtype=np.float32)
 
         dense_norm = self._normalize(dense_scores)
         sparse_norm = self._normalize(sparse_scores)
 
         final_scores = alpha * dense_norm + (1 - alpha) * sparse_norm
-
         top_ids = np.argsort(final_scores)[::-1][:top_k]
 
         results = []

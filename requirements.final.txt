@@ -1,0 +1,10 @@
+﻿pymupdf
+pillow
+numpy
+scikit-learn
+sentence-transformers
+transformers
+accelerate
+streamlit
+rank-bm25
+clip-by-openai
