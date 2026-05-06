@@ -21,17 +21,36 @@ def load_items(rag_dir: Path):
     with open(rag_dir / "items.jsonl", "r", encoding="utf-8") as f:
         for line in f:
             item = json.loads(line)
-            if item.get("page_words"):
+            if item.get("page_words") and item.get("page_image"):
                 items.append(item)
 
     return items
 
 
+def is_word_in_ui_zone(word_box, page_width=1200):
+    x0, y0, x1, y1 = word_box
+
+    # Для старой инструкции UI-скриншоты находятся в верхней части страницы.
+    # Текст инструкции ниже отсекаем.
+    if y0 > 760:
+        return False
+
+    # Отсекаем заголовки страницы сверху.
+    if y0 < 120:
+        return False
+
+    # Отсекаем левый номер/служебные поля, если есть.
+    if x1 < 70:
+        return False
+
+    return True
+
+
 def merge_phrase_words(words, phrase_tokens):
     normalized_words = [normalize_text(w["text"]) for w in words]
     phrase = [normalize_text(t) for t in phrase_tokens]
-
     phrase = [p for p in phrase if p]
+
     if not phrase:
         return []
 
@@ -40,20 +59,21 @@ def merge_phrase_words(words, phrase_tokens):
     for i in range(len(normalized_words) - len(phrase) + 1):
         window = normalized_words[i:i + len(phrase)]
 
-        ok = True
-        for a, b in zip(window, phrase):
-            if a != b:
-                ok = False
-                break
+        if window != phrase:
+            continue
 
-        if ok:
-            selected = words[i:i + len(phrase)]
-            x0 = min(w["bbox_px"][0] for w in selected)
-            y0 = min(w["bbox_px"][1] for w in selected)
-            x1 = max(w["bbox_px"][2] for w in selected)
-            y1 = max(w["bbox_px"][3] for w in selected)
+        selected = words[i:i + len(phrase)]
 
-            matches.append([x0, y0, x1, y1])
+        # Все слова фразы должны быть в UI-зоне.
+        if not all(is_word_in_ui_zone(w["bbox_px"]) for w in selected):
+            continue
+
+        x0 = min(w["bbox_px"][0] for w in selected)
+        y0 = min(w["bbox_px"][1] for w in selected)
+        x1 = max(w["bbox_px"][2] for w in selected)
+        y1 = max(w["bbox_px"][3] for w in selected)
+
+        matches.append([x0, y0, x1, y1])
 
     return matches
 
@@ -78,41 +98,6 @@ def crop_box(page_image_path, bbox, out_path, pad=8):
     return True
 
 
-def extract_candidates_from_page_words(item, allowed_phrases=None):
-    words = item.get("page_words", [])
-
-    candidates = []
-
-    if allowed_phrases:
-        for phrase in allowed_phrases:
-            tokens = phrase.split()
-            boxes = merge_phrase_words(words, tokens)
-
-            for box in boxes:
-                candidates.append({
-                    "text": phrase,
-                    "bbox_px": box,
-                    "page": item["page"],
-                    "source_item_id": item["id"],
-                })
-
-    else:
-        for word in words:
-            text = normalize_text(word["text"])
-
-            if len(text) < 3:
-                continue
-
-            candidates.append({
-                "text": word["text"],
-                "bbox_px": word["bbox_px"],
-                "page": item["page"],
-                "source_item_id": item["id"],
-            })
-
-    return candidates
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rag-dir", default="data/pdf_rag")
@@ -126,6 +111,7 @@ def main():
             "ГОСТы",
             "Показатели контроля",
             "Виды контроля",
+            "Группы прочности",
             "Входной контроль",
             "Заявки на контроль",
             "Выполнения входного контроля",
@@ -134,6 +120,10 @@ def main():
             "Записать",
             "Записать и закрыть",
             "Добавить",
+            "Еще",
+            "Печать",
+            "Отчеты",
+            "Перейти",
         ],
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -144,45 +134,59 @@ def main():
     rag_dir = Path(args.rag_dir)
     crops_dir = Path(args.crops_dir)
     out_path = Path(args.out)
+
+    crops_dir.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     items = load_items(rag_dir)
 
     positives = []
     crop_id = 0
+    seen_positive = set()
 
     for item in items:
-        page_image = item.get("page_image")
-        if not page_image or not Path(page_image).exists():
+        page_image = item["page_image"]
+
+        if not Path(page_image).exists():
             continue
 
-        candidates = extract_candidates_from_page_words(
-            item,
-            allowed_phrases=args.phrases,
-        )
+        page_words = item["page_words"]
 
-        for cand in candidates:
-            crop_path = crops_dir / f"page_{cand['page']:04d}_word_{crop_id:06d}.png"
+        for phrase in args.phrases:
+            boxes = merge_phrase_words(page_words, phrase.split())
 
-            ok = crop_box(
-                page_image_path=page_image,
-                bbox=cand["bbox_px"],
-                out_path=crop_path,
-            )
+            for box in boxes:
+                key = (phrase.lower(), item["page"], tuple(box))
 
-            if not ok:
-                continue
+                if key in seen_positive:
+                    continue
 
-            positives.append({
-                "text": cand["text"],
-                "image": str(crop_path).replace("\\", "/"),
-                "bbox_px": cand["bbox_px"],
-                "page": cand["page"],
-                "label": 1,
-                "source_item_id": cand["source_item_id"],
-            })
+                seen_positive.add(key)
 
-            crop_id += 1
+                crop_path = crops_dir / f"page_{item['page']:04d}_uiword_{crop_id:06d}.png"
+
+                ok = crop_box(
+                    page_image_path=page_image,
+                    bbox=box,
+                    out_path=crop_path,
+                )
+
+                if not ok:
+                    continue
+
+                positives.append({
+                    "text": phrase,
+                    "image": str(crop_path).replace("\\", "/"),
+                    "bbox_px": box,
+                    "page": item["page"],
+                    "label": 1,
+                    "source_item_id": item["id"],
+                })
+
+                crop_id += 1
+
+    if len(positives) < 2:
+        raise RuntimeError("Too few positive UI word crops. Check page_words or UI-zone filters.")
 
     pairs = []
 
@@ -193,7 +197,7 @@ def main():
             neg = random.choice(positives)
 
             tries = 0
-            while normalize_text(neg["text"]) == normalize_text(pos["text"]) and tries < 30:
+            while normalize_text(neg["text"]) == normalize_text(pos["text"]) and tries < 50:
                 neg = random.choice(positives)
                 tries += 1
 
@@ -216,6 +220,10 @@ def main():
     print(f"Positive UI word crops: {len(positives)}")
     print(f"Saved pairs: {out_path}")
     print(f"Pairs: {len(pairs)}")
+
+    print("\nPositive labels:")
+    for p in positives[:30]:
+        print(f"- page={p['page']} text={p['text']} image={p['image']}")
 
 
 if __name__ == "__main__":

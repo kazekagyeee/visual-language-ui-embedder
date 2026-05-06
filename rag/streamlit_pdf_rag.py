@@ -51,20 +51,23 @@ def box_center(box):
 def is_inside_interface_zone(word_box, target_boxes):
     x0, y0, x1, y1 = word_box
 
+    # нижний текст инструкции не трогаем
     if y0 > 950:
         return False
 
     if not target_boxes:
-        return True
+        return False
 
     for target_box in target_boxes:
         tx0, ty0, tx1, ty1 = target_box
 
+        # красная цифра/стрелка стоит слева от слова ГОСТы,
+        # поэтому зона должна идти вправо от нее
         zone = [
-            max(0, tx0 - 450),
-            max(0, ty0 - 180),
-            tx1 + 520,
-            ty1 + 180,
+            max(0, tx0 - 40),
+            max(0, ty0 - 80),
+            tx1 + 420,
+            ty1 + 150,
         ]
 
         zx0, zy0, zx1, zy1 = zone
@@ -106,7 +109,8 @@ def draw_targets(page_path, boxes_px, query=None, page_words=None):
     img = Image.open(page_path).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # old red annotation boxes are ignored
+    # boxes_px НЕ рисуем.
+    # Они нужны только как невидимая зона, рядом с которой ищем UI-слова.
 
     if query and page_words:
         word_boxes = find_query_word_boxes(query, page_words, boxes_px)
@@ -114,6 +118,7 @@ def draw_targets(page_path, boxes_px, query=None, page_words=None):
         for box in word_boxes:
             x0, y0, x1, y1 = box
             pad = 4
+
             for i in range(4):
                 draw.rectangle(
                     [x0 - pad - i, y0 - pad - i, x1 + pad + i, y1 + pad + i],
@@ -166,7 +171,7 @@ def show_text_result_card(result, mode_name, query):
         if page_path.exists():
             highlighted = draw_targets(
                 page_path=page_path,
-                boxes_px=[],
+                boxes_px=item.get("target_bboxes_px", []),
                 query=query,
                 page_words=item.get("page_words", []),
             )
