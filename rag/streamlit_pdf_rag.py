@@ -1,6 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 
 from pathlib import Path
+import re
 
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -9,6 +10,7 @@ from rag.answer_engine import AnswerEngine
 from rag.clip_search import ClipImageSearcher
 from rag.hybrid_search import HybridSearcher
 from rag.visual_search import VisualDescriptionSearcher
+from rag.word_ui_siamese_search import WordUISiameseSearcher
 
 
 @st.cache_resource
@@ -27,37 +29,74 @@ def load_visual_searcher(rag_dir):
 
 
 @st.cache_resource
+def load_word_ui_siamese_searcher():
+    return WordUISiameseSearcher()
+
+
+@st.cache_resource
 def load_answer_engine():
     return AnswerEngine()
 
 
 def normalize_token(text):
-    import re
     text = text.lower().replace("ё", "е")
     return re.sub(r"[^а-яa-z0-9]+", "", text)
 
 
-def find_query_word_boxes(query, page_words):
-    import re
+def box_center(box):
+    x0, y0, x1, y1 = box
+    return (x0 + x1) / 2, (y0 + y1) / 2
 
+
+def is_inside_interface_zone(word_box, target_boxes):
+    x0, y0, x1, y1 = word_box
+
+    if y0 > 950:
+        return False
+
+    if not target_boxes:
+        return True
+
+    for target_box in target_boxes:
+        tx0, ty0, tx1, ty1 = target_box
+
+        zone = [
+            max(0, tx0 - 450),
+            max(0, ty0 - 180),
+            tx1 + 520,
+            ty1 + 180,
+        ]
+
+        zx0, zy0, zx1, zy1 = zone
+
+        if x0 >= zx0 and y0 >= zy0 and x1 <= zx1 and y1 <= zy1:
+            return True
+
+    return False
+
+
+def find_query_word_boxes(query, page_words, target_boxes):
     query_tokens = [
         normalize_token(t)
         for t in re.findall(r"[а-яёa-z0-9]+", query.lower())
     ]
-
     query_tokens = [t for t in query_tokens if len(t) >= 3]
 
     matched = []
 
     for word in page_words:
         word_text = normalize_token(word.get("text", ""))
+        word_box = word.get("bbox_px")
 
-        if len(word_text) < 3:
+        if not word_text or not word_box:
+            continue
+
+        if not is_inside_interface_zone(word_box, target_boxes):
             continue
 
         for token in query_tokens:
             if token in word_text or word_text in token:
-                matched.append(word["bbox_px"])
+                matched.append(word_box)
                 break
 
     return matched
@@ -67,23 +106,13 @@ def draw_targets(page_path, boxes_px, query=None, page_words=None):
     img = Image.open(page_path).convert("RGB")
     draw = ImageDraw.Draw(img)
 
-    # Синим — заранее найденные/размеченные визуальные области
-    for box in boxes_px:
-        x0, y0, x1, y1 = box
+    # old red annotation boxes are ignored
 
-        for i in range(3):
-            draw.rectangle(
-                [x0 - i, y0 - i, x1 + i, y1 + i],
-                outline="blue",
-            )
-
-    # Зеленым — конкретные слова интерфейса, совпавшие с запросом
     if query and page_words:
-        word_boxes = find_query_word_boxes(query, page_words)
+        word_boxes = find_query_word_boxes(query, page_words, boxes_px)
 
         for box in word_boxes:
             x0, y0, x1, y1 = box
-
             pad = 4
             for i in range(4):
                 draw.rectangle(
@@ -108,19 +137,20 @@ def build_context(results):
         seen.add(key)
 
         parts.append(
-            f"[Страница {item['page']}, блок {item.get('block_id', '-') }]\n"
+            f"[Страница {item['page']}, блок {item.get('block_id', '-')}]\n"
             f"{item['text']}"
         )
 
     return "\n\n---\n\n".join(parts)
 
 
-def show_text_result_card(result, mode_name):
+def show_text_result_card(result, mode_name, query):
     item = result["item"]
 
     st.divider()
     st.markdown(
-        f"### {mode_name}: страница {item['page']} · блок {item.get('block_id', '-')} · score={result['score']:.4f}"
+        f"### {mode_name}: страница {item['page']} · "
+        f"блок {item.get('block_id', '-')} · score={result['score']:.4f}"
     )
 
     if "dense_score" in result:
@@ -134,10 +164,16 @@ def show_text_result_card(result, mode_name):
         page_path = Path(item["page_image"])
 
         if page_path.exists():
-            highlighted = draw_targets(page_path, item.get("target_bboxes_px", []), query=st.session_state.get("current_query"), page_words=item.get("page_words", []))
+            highlighted = draw_targets(
+                page_path=page_path,
+                boxes_px=[],
+                query=query,
+                page_words=item.get("page_words", []),
+            )
+
             st.image(
                 highlighted,
-                caption=f"Страница {item['page']}: найденные визуальные области выделены синим",
+                caption=f"Страница {item['page']}: зелёным выделены найденные UI-слова",
             )
         else:
             st.warning(f"Файл страницы не найден: {page_path}")
@@ -145,15 +181,6 @@ def show_text_result_card(result, mode_name):
     with col2:
         st.markdown("#### Текст блока")
         st.write(item["text"])
-
-        target_crops = item.get("target_crop_images", [])
-
-        if target_crops:
-            with st.expander("Показать найденные визуальные элементы"):
-                for crop in target_crops[:5]:
-                    crop_path = Path(crop)
-                    if crop_path.exists():
-                        st.image(Image.open(crop_path))
 
         with st.expander("Технические данные"):
             st.json(item)
@@ -164,7 +191,8 @@ def show_visual_result_card(result):
 
     st.divider()
     st.markdown(
-        f"### Visual description: страница {item['page']} · type={item['type']} · score={result['score']:.4f}"
+        f"### Visual description: страница {item['page']} · "
+        f"type={item['type']} · score={result['score']:.4f}"
     )
 
     col1, col2 = st.columns([1.3, 1])
@@ -188,10 +216,54 @@ def show_visual_result_card(result):
             st.json(item)
 
 
+def show_siamese_ui_results(query):
+    st.subheader("Siamese UI search")
+
+    try:
+        word_searcher = load_word_ui_siamese_searcher()
+
+        if word_searcher.model is None:
+            st.warning(
+                "Siamese UI модель или индекс не найдены. "
+                "Сначала обучи модель и собери индекс."
+            )
+            return
+
+        word_results = word_searcher.search(query, top_k=5)
+
+        for result in word_results:
+            item = result["item"]
+
+            st.divider()
+            st.markdown(
+                f"### UI element: {item['text']} · "
+                f"page={item['page']} · score={result['score']:.4f}"
+            )
+
+            col_a, col_b = st.columns([1, 2])
+
+            with col_a:
+                if Path(item["image"]).exists():
+                    st.image(Image.open(item["image"]), caption="Найденный UI-кроп")
+
+            with col_b:
+                st.json(
+                    {
+                        "text": item["text"],
+                        "page": item["page"],
+                        "bbox_px": item["bbox_px"],
+                        "image": item["image"],
+                    }
+                )
+
+    except Exception as exc:
+        st.warning(f"Siamese UI search не запустился: {exc}")
+
+
 st.set_page_config(page_title="Multimodal PDF RAG", layout="wide")
 
-st.title("Multimodal PDF RAG: текст + визуальные описания")
-st.caption("Текстовый поиск + поиск по описаниям страниц и UI-кропов.")
+st.title("Multimodal PDF RAG: текст + визуал + Siamese UI")
+st.caption("Hybrid search + visual descriptions + word-level Siamese для UI-элементов.")
 
 rag_choice = st.selectbox(
     "Индекс PDF",
@@ -219,9 +291,9 @@ with col4:
 
 run_visual = st.checkbox("Искать по описаниям картинок и кропов", value=True)
 run_clip = st.checkbox("Добавить CLIP-поиск по изображениям", value=False)
+run_siamese_ui = st.checkbox("Добавить Siamese UI search", value=True)
 
 if st.button("Искать"):
-    st.session_state["current_query"] = query
     rag_dir = Path(rag_choice)
 
     if not (rag_dir / "items.jsonl").exists():
@@ -244,7 +316,7 @@ if st.button("Искать"):
     st.info("Использованные страницы: " + ", ".join(map(str, pages)))
 
     for result in text_results:
-        show_text_result_card(result, "Text search")
+        show_text_result_card(result, "Text search", query)
 
     if run_visual and top_k_visual > 0:
         st.subheader("Поиск по визуальным описаниям")
@@ -279,10 +351,13 @@ if st.button("Искать"):
             image_results = clip_searcher.search(query, top_k=top_k_visual)
 
             for result in image_results:
-                show_text_result_card(result, "CLIP image search")
+                show_text_result_card(result, "CLIP image search", query)
 
         except Exception as exc:
             st.warning(f"CLIP-поиск не запустился: {exc}")
+
+    if run_siamese_ui:
+        show_siamese_ui_results(query)
 
     st.divider()
     st.subheader("Контекст")
