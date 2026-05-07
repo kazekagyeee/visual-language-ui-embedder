@@ -117,6 +117,76 @@ def evaluate_model(model, dataloader, device: str, lambda_triplet: float, temper
     return metrics, rows
 
 
+def _log_epoch_metrics(logger, epoch: int, epoch_metrics: dict) -> None:
+    """Readable formatted output of all training metrics after each epoch."""
+    sep = "=" * 65
+    logger.info(sep)
+    logger.info("EPOCH %s COMPLETE", epoch)
+    logger.info(sep)
+
+    train_keys = [
+        ("train_loss", "Total Loss"),
+        ("train_contrastive_loss", "Contrastive Loss"),
+        ("train_triplet_loss", "Triplet Loss"),
+    ]
+    val_loss_keys = [
+        ("val_loss", "Total Loss"),
+        ("val_contrastive_loss", "Contrastive Loss"),
+        ("val_triplet_loss", "Triplet Loss"),
+    ]
+    val_pairwise_keys = [
+        ("val_pos_vs_neg_accuracy", "Pos > Neg Accuracy"),
+        ("val_mean_cosine_text_pos", "Mean Cosine (text, pos)"),
+        ("val_mean_cosine_text_neg", "Mean Cosine (text, neg)"),
+        ("val_outlier_count_cos_neg_gt_pos", "Outliers (neg > pos)"),
+    ]
+    val_margin_keys = [
+        ("val_mean_margin", "Mean Margin"),
+        ("val_median_margin", "Median Margin"),
+        ("val_p10_margin", "P10 Margin"),
+        ("val_p90_margin", "P90 Margin"),
+    ]
+    val_retrieval_keys = [
+        ("val_recall@1", "Recall@1"),
+        ("val_recall@5", "Recall@5"),
+        ("val_recall@10", "Recall@10"),
+        ("val_mrr", "MRR"),
+        ("val_median_rank", "Median Rank"),
+    ]
+
+    def _fmt(v):
+        if isinstance(v, float):
+            return f"{v:.4f}"
+        return str(v)
+
+    logger.info("  [TRAIN]")
+    for key, label in train_keys:
+        if key in epoch_metrics:
+            logger.info("    %-35s %s", label, _fmt(epoch_metrics[key]))
+
+    logger.info("  [VAL  - Loss]")
+    for key, label in val_loss_keys:
+        if key in epoch_metrics:
+            logger.info("    %-35s %s", label, _fmt(epoch_metrics[key]))
+
+    logger.info("  [VAL  - Pairwise]")
+    for key, label in val_pairwise_keys:
+        if key in epoch_metrics:
+            logger.info("    %-35s %s", label, _fmt(epoch_metrics[key]))
+
+    logger.info("  [VAL  - Margin]")
+    for key, label in val_margin_keys:
+        if key in epoch_metrics:
+            logger.info("    %-35s %s", label, _fmt(epoch_metrics[key]))
+
+    logger.info("  [VAL  - Retrieval]")
+    for key, label in val_retrieval_keys:
+        if key in epoch_metrics:
+            logger.info("    %-35s %s", label, _fmt(epoch_metrics[key]))
+
+    logger.info(sep)
+
+
 def _build_qualitative_rows(rows: list[dict], top_k: int = 20) -> list[dict]:
     sorted_rows = sorted(rows, key=lambda row: row["cos_text_pos"] - row["cos_text_neg"])
     false_negative = [row for row in sorted_rows if row["cos_text_neg"] > row["cos_text_pos"]][:top_k]
@@ -224,7 +294,7 @@ def train_model(model, processor, train_dataset, val_dataset, config):
         train_metrics = {f"train_{k}": v / max(1, len(train_loader)) for k, v in running.items()}
         epoch_metrics = {"epoch": epoch + 1, **train_metrics, **{f"val_{k}": v for k, v in val_metrics.items()}}
         append_metrics_history(history_path, epoch_metrics)
-        logger.info("epoch=%s val_metrics=%s", epoch + 1, epoch_metrics)
+        _log_epoch_metrics(logger, epoch + 1, epoch_metrics)
 
         save_checkpoint(Path(output_dir) / "last.ckpt", model, optimizer, scheduler, epoch + 1, best_metric=best_metric)
 
