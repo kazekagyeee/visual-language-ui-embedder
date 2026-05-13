@@ -5,21 +5,17 @@ import json
 import re
 from pathlib import Path
 
-import cv2
 import easyocr
-import numpy as np
 from PIL import Image
+
+from rag.ocr_cleaning import normalize_ocr_text
+from rag.ui_type_detector import detect_ui_type
+from rag.ui_candidate_filter import is_likely_ui_candidate
 
 
 def clean_text(text):
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+", " ", str(text))
     return text.strip()
-
-
-def normalize_text(text):
-    text = text.lower().replace("ё", "е")
-    text = re.sub(r"[^а-яa-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def box_from_easyocr(points):
@@ -28,15 +24,141 @@ def box_from_easyocr(points):
     return [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))]
 
 
+def box_height(box):
+    return box[3] - box[1]
+
+
+def box_width(box):
+    return box[2] - box[0]
+
+
+def center_y(box):
+    return (box[1] + box[3]) / 2
+
+
+def same_line(a, b):
+    h = max(box_height(a), box_height(b), 1)
+    return abs(center_y(a) - center_y(b)) <= h * 0.65
+
+
+def horizontal_gap(a, b):
+    return b[0] - a[2]
+
+
+def should_merge_words(a, b):
+    box_a = a["bbox"]
+    box_b = b["bbox"]
+
+    if not same_line(box_a, box_b):
+        return False
+
+    gap = horizontal_gap(box_a, box_b)
+    h = max(box_height(box_a), box_height(box_b), 1)
+
+    # Разрешаем небольшое наложение bbox, потому что OCR часто режет слова криво.
+    if gap < -h * 1.5:
+        return False
+
+    if gap > h * 3.5:
+        return False
+
+    text_a = normalize_ocr_text(a["text"])
+    text_b = normalize_ocr_text(b["text"])
+
+    if not text_a or not text_b:
+        return False
+
+    merged_words = (text_a + " " + text_b).split()
+
+    if len(merged_words) > 6:
+        return False
+
+    # Специально разрешаем важные UI-фразы.
+    important_pairs = {
+        ("показатели", "контроля"),
+        ("виды", "контроля"),
+        ("группы", "прочности"),
+        ("входной", "контроль"),
+        ("заявки", "на"),
+        ("на", "контроль"),
+        ("акты", "входного"),
+        ("входного", "контроля"),
+        ("выполнения", "входного"),
+    }
+
+    if (text_a, text_b) in important_pairs:
+        return True
+
+    return True
+
+
+def merge_two(a, b):
+    text = clean_text(a["text"] + " " + b["text"])
+
+    ax0, ay0, ax1, ay1 = a["bbox"]
+    bx0, by0, bx1, by1 = b["bbox"]
+
+    merged = dict(a)
+    merged["text"] = text
+    merged["normalized_text"] = normalize_ocr_text(text)
+    merged["bbox"] = [
+        min(ax0, bx0),
+        min(ay0, by0),
+        max(ax1, bx1),
+        max(ay1, by1),
+    ]
+    merged["confidence"] = min(float(a.get("confidence", 1.0)), float(b.get("confidence", 1.0)))
+    merged["merged"] = True
+
+    return merged
+
+
+def merge_nearby_words(elements):
+    by_page = {}
+
+    for el in elements:
+        by_page.setdefault(el["page"], []).append(el)
+
+    merged_all = []
+
+    for page, page_elements in by_page.items():
+        page_elements = sorted(page_elements, key=lambda e: (e["bbox"][1], e["bbox"][0]))
+        used = set()
+
+        for i, item in enumerate(page_elements):
+            if i in used:
+                continue
+
+            current = dict(item)
+            used.add(i)
+
+            changed = True
+            while changed:
+                changed = False
+
+                for j, other in enumerate(page_elements):
+                    if j in used:
+                        continue
+
+                    if should_merge_words(current, other):
+                        current = merge_two(current, other)
+                        used.add(j)
+                        changed = True
+
+            merged_all.append(current)
+
+    return merged_all
+
+
 def crop_box(image_path, bbox, out_path, pad=6):
     img = Image.open(image_path).convert("RGB")
     w, h = img.size
 
     x0, y0, x1, y1 = bbox
-    x0 = max(0, x0 - pad)
-    y0 = max(0, y0 - pad)
-    x1 = min(w, x1 + pad)
-    y1 = min(h, y1 + pad)
+    x0 = max(0, int(x0) - pad)
+    y0 = max(0, int(y0) - pad)
+    x1 = min(w, int(x1) + pad)
+    y1 = min(h, int(y1) + pad)
 
     crop = img.crop((x0, y0, x1, y1))
 
@@ -49,23 +171,23 @@ def crop_box(image_path, bbox, out_path, pad=6):
 
 
 def is_probably_ui_text(text):
-    text_norm = normalize_text(text)
+    norm = normalize_ocr_text(text)
 
-    if len(text_norm) < 3:
+    if len(norm) < 2:
         return False
 
-    bad = [
-        "раздел",
+    bad_parts = [
         "страница",
         "инструкция",
-        "реквизит",
-        "заполняется",
-        "необходимо",
-        "показатели занесенные",
-        "по кнопке",
+        "рис",
+        "рисунок",
+        "таблица",
+        "листинг",
+        "глава",
+        "раздел",
     ]
 
-    if any(b in text_norm for b in bad):
+    if any(bad == norm or norm.startswith(bad + " ") for bad in bad_parts):
         return False
 
     return True
@@ -73,79 +195,56 @@ def is_probably_ui_text(text):
 
 def is_probably_ui_zone(bbox, page_w, page_h):
     x0, y0, x1, y1 = bbox
+    bw = x1 - x0
+    bh = y1 - y0
 
-    # Отсекаем верхние заголовки PDF
-    if y0 < 110:
+    if bw < 8 or bh < 8:
         return False
 
-    # Отсекаем низ с обычным текстом инструкции.
-    # Для инструкций 1С интерфейсы чаще в верхней/средней части страницы.
-    if y0 > page_h * 0.78:
+    # Самый верх PDF — чаще номер страницы / заголовок.
+    if y0 < page_h * 0.10:
         return False
 
-    # Слишком широкие абзацы — не UI.
-    if (x1 - x0) > page_w * 0.65:
+    # Самый низ — чаще текст инструкции.
+    if y0 > page_h * 0.92:
+        return False
+
+    # Очень длинные строки — чаще абзацы.
+    if bw > page_w * 0.70:
         return False
 
     return True
 
 
-def merge_nearby_words(elements):
-    """
-    EasyOCR часто возвращает слова отдельно.
-    Склеиваем близкие слова в UI-фразы: "Показатели контроля", "Входной контроль".
-    """
-    by_page = {}
+def save_final_crops(elements, out_dir):
+    final = []
+    seen = set()
 
-    for el in elements:
-        by_page.setdefault(el["page"], []).append(el)
+    for idx, el in enumerate(elements):
+        key = (
+            el["page"],
+            el["normalized_text"],
+            tuple(el["bbox"]),
+        )
 
-    merged = []
+        if key in seen:
+            continue
 
-    for page, rows in by_page.items():
-        rows = sorted(rows, key=lambda e: (e["bbox"][1], e["bbox"][0]))
+        seen.add(key)
 
-        used = set()
+        page = int(el["page"])
+        crop_path = out_dir / f"page_{page:04d}_ui_{idx:06d}.png"
 
-        for i, el in enumerate(rows):
-            if i in used:
-                continue
+        if not crop_box(el["page_image"], el["bbox"], crop_path, pad=7):
+            continue
 
-            group = [el]
-            used.add(i)
+        item = dict(el)
+        item["id"] = f"page_{page}_ui_{idx}"
+        item["crop_image"] = str(crop_path).replace("\\", "/")
+        item["ui_type"] = detect_ui_type(item["text"], item["bbox"])
+        final.append(item)
 
-            x0, y0, x1, y1 = el["bbox"]
-
-            for j, other in enumerate(rows):
-                if j in used:
-                    continue
-
-                ox0, oy0, ox1, oy1 = other["bbox"]
-
-                same_line = abs(oy0 - y0) < 18
-                close_x = 0 <= ox0 - x1 < 45
-
-                if same_line and close_x:
-                    group.append(other)
-                    used.add(j)
-                    x1 = max(x1, ox1)
-                    y1 = max(y1, oy1)
-
-            text = " ".join(g["text"] for g in group)
-            bbox = [
-                min(g["bbox"][0] for g in group),
-                min(g["bbox"][1] for g in group),
-                max(g["bbox"][2] for g in group),
-                max(g["bbox"][3] for g in group),
-            ]
-
-            base = dict(group[0])
-            base["text"] = clean_text(text)
-            base["normalized_text"] = normalize_text(text)
-            base["bbox"] = bbox
-            merged.append(base)
-
-    return merged
+    return final
 
 
 def main():
@@ -153,22 +252,29 @@ def main():
     parser.add_argument("--rag-dir", default="data/pdf_rag")
     parser.add_argument("--langs", nargs="+", default=["ru", "en"])
     parser.add_argument("--gpu", action="store_true")
+    parser.add_argument("--max-pages", type=int, default=120)
+    parser.add_argument("--min-conf", type=float, default=0.25)
     args = parser.parse_args()
 
     rag_dir = Path(args.rag_dir)
     pages_dir = rag_dir / "pages"
-    crops_dir = rag_dir / "ui_element_crops"
+    raw_crops_dir = rag_dir / "ui_element_crops"
+    merged_crops_dir = rag_dir / "ui_element_crops_merged"
     out_path = rag_dir / "ui_elements.jsonl"
+
+    if not pages_dir.exists():
+        raise FileNotFoundError(f"Pages directory not found: {pages_dir}")
 
     reader = easyocr.Reader(args.langs, gpu=args.gpu)
 
-    page_images = sorted(pages_dir.glob("*.png"))
+    page_images = sorted(pages_dir.glob("*.png"))[: args.max_pages]
 
-    all_elements = []
+    raw_elements = []
     crop_id = 0
 
     for page_image in page_images:
         page_num_match = re.search(r"page_(\d+)", page_image.stem)
+
         if not page_num_match:
             continue
 
@@ -177,12 +283,18 @@ def main():
         img = Image.open(page_image).convert("RGB")
         page_w, page_h = img.size
 
-        results = reader.readtext(str(page_image), detail=1, paragraph=False)
+        print(f"OCR page {page}: {page_image}")
+
+        results = reader.readtext(
+            str(page_image),
+            detail=1,
+            paragraph=False,
+        )
 
         for points, text, conf in results:
             text = clean_text(text)
 
-            if conf < 0.25:
+            if conf < args.min_conf:
                 continue
 
             bbox = box_from_easyocr(points)
@@ -193,17 +305,22 @@ def main():
             if not is_probably_ui_zone(bbox, page_w, page_h):
                 continue
 
-            crop_path = crops_dir / f"page_{page:04d}_ui_{crop_id:06d}.png"
-
-            ok = crop_box(page_image, bbox, crop_path)
-            if not ok:
+            if not is_likely_ui_candidate(text, bbox, page_w, page_h):
                 continue
 
-            all_elements.append({
-                "id": f"page_{page}_ui_{crop_id}",
+            ui_type = detect_ui_type(text, bbox, page_width=page_w)
+
+            crop_path = raw_crops_dir / f"page_{page:04d}_ui_{crop_id:06d}.png"
+
+            if not crop_box(page_image, bbox, crop_path, pad=5):
+                continue
+
+            raw_elements.append({
+                "id": f"page_{page}_ui_raw_{crop_id}",
                 "page": page,
                 "text": text,
-                "normalized_text": normalize_text(text),
+                "normalized_text": normalize_ocr_text(text),
+                "ui_type": ui_type,
                 "confidence": float(conf),
                 "bbox": bbox,
                 "page_image": str(page_image).replace("\\", "/"),
@@ -212,31 +329,17 @@ def main():
 
             crop_id += 1
 
-    all_elements = merge_nearby_words(all_elements)
-
-    # Пересохраняем кропы после merge.
-    final_elements = []
-    final_crops_dir = rag_dir / "ui_element_crops_merged"
-    final_id = 0
-
-    for el in all_elements:
-        crop_path = final_crops_dir / f"page_{el['page']:04d}_ui_{final_id:06d}.png"
-
-        ok = crop_box(el["page_image"], el["bbox"], crop_path)
-        if not ok:
-            continue
-
-        el["id"] = f"page_{el['page']}_ui_{final_id}"
-        el["crop_image"] = str(crop_path).replace("\\", "/")
-        final_elements.append(el)
-        final_id += 1
+    merged_elements = merge_nearby_words(raw_elements)
+    final_elements = save_final_crops(merged_elements, merged_crops_dir)
 
     with open(out_path, "w", encoding="utf-8") as f:
         for el in final_elements:
             f.write(json.dumps(el, ensure_ascii=False) + "\n")
 
+    print("=" * 80)
     print(f"Saved UI elements: {out_path}")
-    print(f"Elements: {len(final_elements)}")
+    print(f"Raw elements: {len(raw_elements)}")
+    print(f"Merged elements: {len(final_elements)}")
 
 
 if __name__ == "__main__":
