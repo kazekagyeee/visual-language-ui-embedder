@@ -2,27 +2,80 @@
 
 import json
 import math
+import re
 from pathlib import Path
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
 
+STOP_WORDS = {
+    "где", "как", "что", "это", "найти", "нужно", "надо", "можно",
+    "в", "на", "по", "для", "и", "или", "а", "с", "из", "к", "у",
+}
+
+
 def load_jsonl(path):
     rows = []
+
     with open(path, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line:
                 rows.append(json.loads(line))
+
     return rows
 
 
-def tokenize(text):
+def normalize(text):
     text = str(text).lower().replace("ё", "е")
-    for ch in ",.;:!?()[]{}«»\"'—–-":
-        text = text.replace(ch, " ")
-    return [x for x in text.split() if x]
+    text = re.sub(r"[^а-яa-z0-9\s\-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def tokenize(text):
+    return [
+        token
+        for token in normalize(text).split()
+        if len(token) > 2 and token not in STOP_WORDS
+    ]
+
+
+def expand_query(query):
+    q = normalize(query)
+    variants = [query]
+
+    dictionary = {
+        "входной контроль": [
+            "входной контроль",
+            "контроль поступления",
+            "проверка поступления",
+            "приемка товаров",
+        ],
+        "организацию": [
+            "организации",
+            "создать организацию",
+            "справочник организации",
+            "новая организация",
+        ],
+        "организация": [
+            "организации",
+            "создать организацию",
+            "справочник организации",
+            "новая организация",
+        ],
+        "интернет поддержк": [
+            "интернет-поддержка пользователей",
+            "монитор интернет-поддержки",
+            "подключить интернет-поддержку",
+        ],
+    }
+
+    for key, vals in dictionary.items():
+        if key in q:
+            variants.extend(vals)
+
+    return list(dict.fromkeys(variants))
 
 
 class HybridSearcher:
@@ -34,17 +87,21 @@ class HybridSearcher:
         self.rag_dir = Path(rag_dir)
         self.model = SentenceTransformer(model_name)
 
-        items_path = self._find_items_path()
-        self.items = load_jsonl(items_path)
+        items_path = self.rag_dir / "items.jsonl"
 
-        self._normalize_items()
+        if not items_path.exists():
+            raise FileNotFoundError(
+                f"Не найден индекс {items_path}. "
+                f"Сначала запусти scripts/build_pdf_rag_multi.py"
+            )
+
+        self.items = load_jsonl(items_path)
 
         embeddings_path = self.rag_dir / "embeddings.npy"
 
         if embeddings_path.exists():
             self.embeddings = np.load(embeddings_path)
         else:
-            print(f"embeddings.npy not found, building: {embeddings_path}")
             texts = [item.get("text", "") for item in self.items]
             self.embeddings = self.model.encode(
                 texts,
@@ -56,36 +113,6 @@ class HybridSearcher:
 
         self.doc_tokens = [tokenize(item.get("text", "")) for item in self.items]
         self.idf = self._build_idf(self.doc_tokens)
-
-    def _find_items_path(self):
-        candidates = [
-            self.rag_dir / "items.jsonl",
-            self.rag_dir / "text_blocks.jsonl",
-            self.rag_dir / "blocks.jsonl",
-            self.rag_dir / "chunks.jsonl",
-            self.rag_dir / "pdf_blocks.jsonl",
-        ]
-
-        for path in candidates:
-            if path.exists():
-                return path
-
-        raise FileNotFoundError(
-            "Не найден текстовый индекс. Ожидался один из файлов: "
-            + ", ".join(str(p) for p in candidates)
-        )
-
-    def _normalize_items(self):
-        for idx, item in enumerate(self.items):
-            item.setdefault("id", f"item_{idx}")
-
-            if "block_id" not in item:
-                item["block_id"] = item.get("block", idx)
-
-            if "page_image" not in item:
-                page = int(item.get("page", 1))
-                page_image = self.rag_dir / "pages" / f"page_{page:04d}.png"
-                item["page_image"] = str(page_image).replace("\\", "/")
 
     def _build_idf(self, docs):
         n = len(docs)
@@ -104,45 +131,55 @@ class HybridSearcher:
         if not doc_tokens:
             return 0.0
 
-        score = 0.0
-        dl = len(doc_tokens)
-
         tf = {}
+
         for token in doc_tokens:
             tf[token] = tf.get(token, 0) + 1
+
+        score = 0.0
+        dl = len(doc_tokens)
 
         for token in query_tokens:
             if token not in tf:
                 continue
 
-            idf = self.idf.get(token, 0.0)
             freq = tf[token]
-
+            idf = self.idf.get(token, 0.0)
             denom = freq + k1 * (1 - b + b * dl / max(avgdl, 1))
+
             score += idf * (freq * (k1 + 1)) / max(denom, 1e-8)
 
         return float(score)
 
-    def search(self, query, top_k=5, alpha=0.35):
+    def search(self, query, top_k=7, alpha=0.2):
         if not self.items:
             return []
 
-        query_vec = self.model.encode(
-            [query],
-            normalize_embeddings=True,
-        )[0]
+        query_variants = expand_query(query)
 
-        query_vec = np.asarray(query_vec, dtype=np.float32)
+        query_vecs = self.model.encode(
+            query_variants,
+            normalize_embeddings=True,
+        )
+
+        query_vec = np.mean(query_vecs, axis=0).astype("float32")
+        query_vec = query_vec / max(np.linalg.norm(query_vec), 1e-8)
 
         dense_scores = self.embeddings @ query_vec
 
-        query_tokens = tokenize(query)
+        all_query_tokens = []
+
+        for variant in query_variants:
+            all_query_tokens.extend(tokenize(variant))
+
+        query_tokens = list(dict.fromkeys(all_query_tokens))
+
         avgdl = sum(len(x) for x in self.doc_tokens) / max(1, len(self.doc_tokens))
 
         bm25_scores = np.array(
             [
-                self._bm25_score(query_tokens, tokens, avgdl)
-                for tokens in self.doc_tokens
+                self._bm25_score(query_tokens, doc_tokens, avgdl)
+                for doc_tokens in self.doc_tokens
             ],
             dtype=np.float32,
         )
@@ -152,20 +189,39 @@ class HybridSearcher:
         else:
             bm25_norm = bm25_scores
 
-        dense_norm = dense_scores
+        dense_norm = (dense_scores + 1.0) / 2.0
 
         final_scores = alpha * dense_norm + (1.0 - alpha) * bm25_norm
 
-        order = np.argsort(-final_scores)[:top_k]
+        order = np.argsort(-final_scores)
 
         results = []
+        seen = set()
 
         for idx in order:
-            results.append({
-                "item": self.items[int(idx)],
-                "score": float(final_scores[int(idx)]),
-                "dense_score": float(dense_scores[int(idx)]),
-                "bm25_score": float(bm25_scores[int(idx)]),
-            })
+            item = self.items[int(idx)]
+
+            key = (
+                item.get("doc_id"),
+                item.get("page"),
+                item.get("chunk_id"),
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            results.append(
+                {
+                    "item": item,
+                    "score": float(final_scores[int(idx)]),
+                    "dense_score": float(dense_scores[int(idx)]),
+                    "bm25_score": float(bm25_scores[int(idx)]),
+                }
+            )
+
+            if len(results) >= top_k:
+                break
 
         return results

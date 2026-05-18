@@ -1,117 +1,115 @@
 ﻿# -*- coding: utf-8 -*-
 
 from pathlib import Path
-from PIL import Image, ImageDraw
+from collections import defaultdict
+
+from PIL import Image, ImageDraw, ImageFont
 
 
-def _pad_box(box, pad, w, h):
-    x0, y0, x1, y1 = [int(v) for v in box]
-    return [
-        max(0, x0 - pad),
-        max(0, y0 - pad),
-        min(w, x1 + pad),
-        min(h, y1 + pad),
-    ]
+def safe_font(size=24):
+    try:
+        return ImageFont.truetype("arial.ttf", size)
+    except Exception:
+        return ImageFont.load_default()
 
 
-def _union_box(boxes):
-    return [
-        min(b[0] for b in boxes),
-        min(b[1] for b in boxes),
-        max(b[2] for b in boxes),
-        max(b[3] for b in boxes),
-    ]
+def draw_ui_results(ui_results, out_dir="temp/ui_result_images"):
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
+    grouped = defaultdict(list)
 
-def make_ui_focus_image(page_image_path, matched_elements, out_path="temp/ui_focus.png", pad=35):
-    """
-    Показывает НЕ маленький кроп элемента, а всю найденную картинку интерфейса из PDF.
-    Если у элемента есть zone_bbox — берем всю UI-зону.
-    Если zone_bbox нет — берем область вокруг найденных элементов.
-    """
-    page_image_path = Path(page_image_path)
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    for global_idx, result in enumerate(ui_results, start=1):
+        result = dict(result)
+        result["global_idx"] = global_idx
+        item = result["item"]
+        grouped[item["screenshot_image"]].append(result)
 
-    img = Image.open(page_image_path).convert("RGB")
-    w, h = img.size
+    outputs = []
 
-    zones = [
-        el.get("zone_bbox")
-        for el in matched_elements
-        if el.get("zone_bbox")
-    ]
+    for screenshot_path, results in grouped.items():
+        path = Path(screenshot_path)
 
-    if zones:
-        focus_box = _union_box(zones)
-        focus_box = _pad_box(focus_box, pad, w, h)
-    else:
-        boxes = [el["bbox"] for el in matched_elements if el.get("bbox")]
-        focus_box = _pad_box(_union_box(boxes), 160, w, h)
-
-    crop = img.crop(tuple(focus_box))
-    draw = ImageDraw.Draw(crop)
-
-    colors = [
-        (220, 30, 30),
-        (20, 130, 40),
-        (30, 90, 220),
-        (230, 150, 0),
-    ]
-
-    for idx, el in enumerate(matched_elements):
-        box = el.get("bbox")
-
-        if not box:
+        if not path.exists():
             continue
 
-        x0, y0, x1, y1 = [int(v) for v in box]
+        img = Image.open(path).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        font = safe_font(26)
 
-        local_box = [
-            x0 - focus_box[0],
-            y0 - focus_box[1],
-            x1 - focus_box[0],
-            y1 - focus_box[1],
-        ]
+        for result in results:
+            item = result["item"]
+            bbox = item.get("bbox")
 
-        color = colors[idx % len(colors)]
+            if not bbox:
+                continue
 
-        for k in range(4):
+            x0, y0, x1, y1 = bbox
+            pad = 8
+
             draw.rectangle(
-                [
-                    local_box[0] - k,
-                    local_box[1] - k,
-                    local_box[2] + k,
-                    local_box[3] + k,
-                ],
-                outline=color,
+                [x0 - pad, y0 - pad, x1 + pad, y1 + pad],
+                outline=(0, 180, 0),
+                width=6,
             )
 
-    crop.save(out_path)
-    return str(out_path)
+            label = str(result["global_idx"])
+
+            draw.rectangle(
+                [x0 - pad, y0 - 38, x0 + 34, y0 - 4],
+                fill=(0, 180, 0),
+            )
+
+            draw.text(
+                [x0 + 3, y0 - 36],
+                label,
+                fill=(255, 255, 255),
+                font=font,
+            )
+
+        out_path = out_dir / f"{path.stem}_marked.png"
+        img.save(out_path)
+
+        outputs.append(
+            {
+                "path": str(out_path),
+                "items": [r["item"] for r in results],
+                "marked": True,
+            }
+        )
+
+    return outputs
 
 
-def make_full_debug_image(page_image_path, matched_elements, out_path="temp/ui_debug_full.png"):
-    page_image_path = Path(page_image_path)
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+def show_page_screenshots_from_ui_index(ui_searcher, pdf_name, page, out_dir="temp/ui_page_screenshots"):
+    screenshots = []
 
-    img = Image.open(page_image_path).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    for el in matched_elements:
-        box = el.get("bbox")
-
-        if not box:
+    for item in ui_searcher.items:
+        if item.get("pdf_name") != pdf_name:
             continue
 
-        x0, y0, x1, y1 = [int(v) for v in box]
+        if int(item.get("page", -1)) != int(page):
+            continue
 
-        for k in range(5):
-            draw.rectangle(
-                [x0 - k, y0 - k, x1 + k, y1 + k],
-                outline=(220, 30, 30),
-            )
+        path = item.get("screenshot_image")
 
-    img.save(out_path)
-    return str(out_path)
+        if path and path not in screenshots:
+            screenshots.append(path)
+
+    outputs = []
+
+    for screenshot in screenshots[:4]:
+        path = Path(screenshot)
+
+        if not path.exists():
+            continue
+
+        outputs.append(
+            {
+                "path": str(path),
+                "items": [],
+                "marked": False,
+            }
+        )
+
+    return outputs

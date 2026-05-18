@@ -1,157 +1,136 @@
 ﻿# -*- coding: utf-8 -*-
 
 import argparse
-import json
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
+from torch.utils.data import DataLoader, random_split
 from sentence_transformers import SentenceTransformer
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 
-from models.siamese_ui_encoder import SiameseUIConfig, SiameseUIEncoder
-
-
-class SiamesePairsDataset(Dataset):
-    def __init__(self, pairs_path, text_model_name, image_size=128):
-        self.rows = []
-
-        with open(pairs_path, "r", encoding="utf-8") as f:
-            for line in f:
-                self.rows.append(json.loads(line))
-
-        self.text_model = SentenceTransformer(text_model_name)
-
-        self.image_transform = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225],
-            ),
-        ])
-
-        texts = [row["text"] for row in self.rows]
-        self.text_embeddings = self.text_model.encode(
-            texts,
-            normalize_embeddings=True,
-            show_progress_bar=True,
-        ).astype("float32")
-
-    def __len__(self):
-        return len(self.rows)
-
-    def __getitem__(self, idx):
-        row = self.rows[idx]
-
-        image = Image.open(row["image"]).convert("RGB")
-        image = self.image_transform(image)
-
-        text_vec = torch.tensor(self.text_embeddings[idx], dtype=torch.float32)
-        label = torch.tensor(float(row["label"]), dtype=torch.float32)
-
-        return {
-            "text_vec": text_vec,
-            "image": image,
-            "label": label,
-        }
+from models.ui_siamese_ranker import UISiameseRanker
+from training.ui_pair_dataset import UIPairDataset
 
 
-def train_epoch(model, loader, optimizer, device):
-    model.train()
+def collate(batch):
+    return {
+        "query_vec": torch.stack([x["query_vec"] for x in batch]),
+        "ui_vec": torch.stack([x["ui_vec"] for x in batch]),
+        "label": torch.stack([x["label"] for x in batch]),
+    }
 
-    total_loss = 0.0
+
+def evaluate(model, loader, device):
+    model.eval()
+
     correct = 0
     total = 0
+    loss_sum = 0.0
 
-    for batch in loader:
-        text_vec = batch["text_vec"].to(device)
-        image = batch["image"].to(device)
-        label = batch["label"].to(device)
+    with torch.no_grad():
+        for batch in loader:
+            q = batch["query_vec"].to(device)
+            u = batch["ui_vec"].to(device)
+            y = batch["label"].to(device)
 
-        out = model(text_vec, image)
+            logits = model(q, u) * 8.0
+            loss = F.binary_cross_entropy_with_logits(logits, y)
 
-        bce_loss = F.binary_cross_entropy_with_logits(out["logits"], label)
+            pred = (torch.sigmoid(logits) >= 0.5).float()
 
-        # contrastive часть:
-        # positive должны иметь similarity ближе к 1
-        # negative — ближе к 0 / ниже
-        target_similarity = label * 2 - 1
-        cosine_loss = F.mse_loss(out["similarity"], target_similarity)
+            correct += (pred == y).sum().item()
+            total += y.numel()
+            loss_sum += loss.item()
 
-        loss = bce_loss + 0.25 * cosine_loss
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += float(loss.item()) * len(label)
-
-        preds = (torch.sigmoid(out["logits"]) >= 0.5).float()
-        correct += int((preds == label).sum().item())
-        total += len(label)
-
-    return total_loss / max(total, 1), correct / max(total, 1)
+    return loss_sum / max(1, len(loader)), correct / max(1, total)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pairs", default="data/siamese_pairs.jsonl")
-    parser.add_argument("--out", default="checkpoints/ui_siamese/best.pt")
-    parser.add_argument("--text-model", default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-    parser.add_argument("--epochs", type=int, default=15)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--pairs", default="data/ui_training_pairs.jsonl")
+    parser.add_argument("--out", default="checkpoints/ui_siamese_ranker.pt")
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--image-size", type=int, default=128)
-    parser.add_argument("--embedding-dim", type=int, default=64)
+    parser.add_argument(
+        "--model-name",
+        default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
 
-    ds = SiamesePairsDataset(
-        pairs_path=args.pairs,
-        text_model_name=args.text_model,
-        image_size=args.image_size,
-    )
+    embedder = SentenceTransformer(args.model_name)
+    dataset = UIPairDataset(args.pairs, embedder)
 
-    loader = DataLoader(
-        ds,
+    val_size = max(1, int(len(dataset) * 0.2))
+    train_size = len(dataset) - val_size
+
+    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(
+        train_ds,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=0,
+        collate_fn=collate,
     )
 
-    text_dim = ds.text_embeddings.shape[1]
-
-    config = SiameseUIConfig(
-        text_dim=text_dim,
-        image_size=args.image_size,
-        embedding_dim=args.embedding_dim,
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate,
     )
 
-    model = SiameseUIEncoder(config).to(device)
+    model = UISiameseRanker(input_dim=384).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    best_acc = -1.0
-
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    best_acc = 0.0
 
     for epoch in range(1, args.epochs + 1):
-        loss, acc = train_epoch(model, loader, optimizer, device)
+        model.train()
 
-        print(f"epoch={epoch:03d} loss={loss:.4f} acc={acc:.4f}")
+        loss_sum = 0.0
 
-        if acc > best_acc:
-            best_acc = acc
-            model.save(out_path)
+        for batch in train_loader:
+            q = batch["query_vec"].to(device)
+            u = batch["ui_vec"].to(device)
+            y = batch["label"].to(device)
 
-    print(f"Saved best model: {out_path}")
-    print(f"Best acc: {best_acc:.4f}")
+            logits = model(q, u) * 8.0
+            loss = F.binary_cross_entropy_with_logits(logits, y)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            loss_sum += loss.item()
+
+        val_loss, val_acc = evaluate(model, val_loader, device)
+
+        print(
+            f"epoch={epoch:03d} "
+            f"train_loss={loss_sum / max(1, len(train_loader)):.4f} "
+            f"val_loss={val_loss:.4f} "
+            f"val_acc={val_acc:.4f}"
+        )
+
+        if val_acc >= best_acc:
+            best_acc = val_acc
+            out = Path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+
+            torch.save(
+                {
+                    "model_state": model.state_dict(),
+                    "model_name": args.model_name,
+                    "input_dim": 384,
+                },
+                out,
+            )
+
+    print(f"[DONE] best_acc={best_acc:.4f}")
+    print(f"[SAVED] {args.out}")
 
 
 if __name__ == "__main__":

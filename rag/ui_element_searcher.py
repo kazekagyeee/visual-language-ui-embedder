@@ -5,179 +5,208 @@ import re
 from pathlib import Path
 
 import numpy as np
-import torch
 from sentence_transformers import SentenceTransformer
 
-from models.siamese_ui_encoder import SiameseUIEncoder
-from rag.ocr_cleaning import normalize_ocr_text
-from rag.ui_reranker import UIReranker
+
+STOP_WORDS = {
+    "где", "как", "что", "найти", "создать", "сделать",
+    "нужно", "надо", "можно", "в", "на", "по", "для",
+    "и", "или", "а", "из", "к", "у",
+}
 
 
-def normalize_text(text):
-    return normalize_ocr_text(text)
+def normalize(text):
+    text = str(text).lower().replace("ё", "е")
+    text = re.sub(r"[^а-яa-z0-9\s\-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def lexical_bonus(query, text):
-    q = normalize_text(query)
-    t = normalize_text(text)
+def tokenize(text):
+    return [
+        x for x in normalize(text).split()
+        if len(x) > 2 and x not in STOP_WORDS
+    ]
 
-    if q == t:
-        return 1.4
-    if q in t or t in q:
-        return 1.0
 
-    q_tokens = set(q.split())
-    t_tokens = set(t.split())
+def load_jsonl(path):
+    rows = []
 
-    if not q_tokens:
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            line = line.strip()
+
+            if line:
+                rows.append(json.loads(line))
+
+    return rows
+
+
+def lexical_score(query, text):
+    q = set(tokenize(query))
+    t = set(tokenize(text))
+
+    if not q or not t:
         return 0.0
 
-    return len(q_tokens & t_tokens) / len(q_tokens) * 0.6
+    return len(q & t) / max(1, len(q))
+
+
+def target_score(targets, text):
+    if not targets:
+        return 0.0
+
+    n_text = normalize(text)
+    best = 0.0
+
+    for target in targets:
+        n_target = normalize(target)
+
+        if not n_target:
+            continue
+
+        if n_text == n_target:
+            best = max(best, 1.0)
+
+        elif n_target in n_text or n_text in n_target:
+            best = max(best, 0.95)
+
+        else:
+            best = max(best, lexical_score(n_target, n_text))
+
+    return best
+
+
+def page_allowed(item_page, page_filter):
+    if page_filter is None:
+        return True
+
+    item_page = int(item_page)
+
+    if isinstance(page_filter, (list, tuple, set)):
+        return item_page in {int(p) for p in page_filter}
+
+    return item_page == int(page_filter)
 
 
 class UIElementSearcher:
     def __init__(
         self,
-        checkpoint="checkpoints/ui_elements_siamese/best.pt",
-        index_dir="indexes/ui_elements_siamese",
-        text_model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        index_dir="data/ui_index",
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        checkpoint=None,
     ):
-        self.checkpoint = Path(checkpoint)
         self.index_dir = Path(index_dir)
-        self.text_model_name = text_model_name
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.items_path = self.index_dir / "ui_items.jsonl"
+        self.embeddings_path = self.index_dir / "ui_embeddings.npy"
 
-        self.model = None
-        self.text_model = None
-        self.items = []
-        self.embeddings = None
-        self.reranker = UIReranker()
+        self.model = SentenceTransformer(model_name)
 
-        if self.checkpoint.exists() and (self.index_dir / "items.jsonl").exists():
-            self.load()
+        if not self.items_path.exists():
+            self.items = []
+            self.embeddings = None
+            return
 
-    def load(self):
-        self.model = SiameseUIEncoder.load(
-            self.checkpoint,
-            map_location=self.device,
-        ).to(self.device)
+        self.items = load_jsonl(self.items_path)
 
-        self.model.eval()
-        self.text_model = SentenceTransformer(self.text_model_name)
+        if self.embeddings_path.exists():
+            self.embeddings = np.load(self.embeddings_path)
+        else:
+            texts = [item.get("text", "") for item in self.items]
+            self.embeddings = self.model.encode(
+                texts,
+                normalize_embeddings=True,
+                show_progress_bar=True,
+            )
+            self.embeddings = np.asarray(self.embeddings, dtype=np.float32)
+            np.save(self.embeddings_path, self.embeddings)
 
-        with open(self.index_dir / "items.jsonl", "r", encoding="utf-8") as f:
-            self.items = [json.loads(line) for line in f]
+    def search(
+        self,
+        query,
+        targets=None,
+        page_filter=None,
+        pdf_filter=None,
+        top_k=20,
+    ):
+        if not self.items or self.embeddings is None:
+            return []
 
-        self.embeddings = np.load(self.index_dir / "embeddings.npy")
+        targets = targets or []
 
-    def known_ui_phrases_in_query(self, query):
-        q = normalize_text(query)
-        found = []
+        query_text = " ".join([query] + targets)
 
-        unique_texts = sorted(
-            {item["text"] for item in self.items},
-            key=lambda x: len(normalize_text(x)),
-            reverse=True,
-        )
-
-        for text in unique_texts:
-            t = normalize_text(text)
-
-            if len(t) < 3:
-                continue
-
-            if t in q:
-                found.append(text)
-
-        cleaned = []
-
-        for phrase in found:
-            p = normalize_text(phrase)
-
-            nested = False
-            for other in cleaned:
-                o = normalize_text(other)
-                if p in o and p != o:
-                    nested = True
-                    break
-
-            if not nested:
-                cleaned.append(phrase)
-
-        return cleaned
-
-    def search(self, query, top_k=8):
-        if self.model is None:
-            raise FileNotFoundError("UI Element Siamese model/index not found.")
-
-        query_vec = self.text_model.encode(
-            [query],
+        query_vec = self.model.encode(
+            [query_text],
             normalize_embeddings=True,
-        ).astype("float32")
+        )[0].astype("float32")
 
-        query_vec = torch.tensor(query_vec, dtype=torch.float32).to(self.device)
-
-        with torch.no_grad():
-            text_emb = self.model.encode_text(query_vec).cpu().numpy()[0]
-
-        siamese_scores = self.embeddings @ text_emb
+        dense_scores = self.embeddings @ query_vec
 
         results = []
 
-        for score, item in zip(siamese_scores, self.items):
-            bonus = lexical_bonus(query, item.get("text", ""))
-            final_score = float(score) + bonus
+        for idx, item in enumerate(self.items):
+            if pdf_filter is not None and item.get("pdf_name") != pdf_filter:
+                continue
 
-            results.append({
-                "score": final_score,
-                "raw_score": final_score,
-                "siamese_score": float(score),
-                "item": item,
-            })
+            if not page_allowed(item.get("page", -1), page_filter):
+                continue
 
-        return self.reranker.rerank(query, results, top_k=top_k)
+            text = item.get("text", "")
 
-    def search_many(self, query, text_pages=None, per_phrase_k=3, max_total=12):
-        phrases = self.known_ui_phrases_in_query(query)
+            lex = lexical_score(query, text)
+            targ = target_score(targets, text)
+            dense = float(dense_scores[idx])
 
-        if not phrases:
-            phrases = [query]
+            ui_bonus = 0.0
 
-        collected = []
+            if item.get("ui_type") == "button":
+                ui_bonus += 0.10
+
+            if item.get("ui_type") in {"menu_item", "link"}:
+                ui_bonus += 0.08
+
+            final = (
+                0.30 * ((dense + 1) / 2)
+                + 0.25 * lex
+                + 0.40 * targ
+                + ui_bonus
+            )
+
+            if targ <= 0 and lex <= 0.05:
+                continue
+
+            results.append(
+                {
+                    "item": item,
+                    "score": float(final),
+                    "dense_score": dense,
+                    "lexical_score": float(lex),
+                    "target_score": float(targ),
+                }
+            )
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+
+        unique = []
         seen = set()
 
-        for phrase in phrases:
-            results = self.search(phrase, top_k=per_phrase_k * 10)
+        for result in results:
+            item = result["item"]
 
-            if text_pages:
-                preferred = [
-                    r for r in results
-                    if r["item"]["page"] in text_pages
-                ]
+            key = (
+                item.get("pdf_name"),
+                item.get("page"),
+                item.get("screenshot_idx"),
+                normalize(item.get("text", "")),
+            )
 
-                if preferred:
-                    results = preferred
+            if key in seen:
+                continue
 
-            added = 0
+            seen.add(key)
+            unique.append(result)
 
-            for result in results:
-                item = result["item"]
-                key = (
-                    item["page"],
-                    tuple(item["bbox"]),
-                    normalize_text(item.get("text", "")),
-                )
+            if len(unique) >= top_k:
+                break
 
-                if key in seen:
-                    continue
-
-                seen.add(key)
-                result["matched_query"] = phrase
-                collected.append(result)
-                added += 1
-
-                if added >= per_phrase_k:
-                    break
-
-        collected.sort(key=lambda x: x.get("final_score", x["score"]), reverse=True)
-        return collected[:max_total]
+        return unique

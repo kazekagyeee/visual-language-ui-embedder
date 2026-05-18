@@ -1,22 +1,44 @@
 ﻿# -*- coding: utf-8 -*-
 
 from pathlib import Path
+import subprocess
+import sys
 
 import streamlit as st
-from PIL import Image
 
 from rag.answer_engine import AnswerEngine
 from rag.hybrid_search import HybridSearcher
-from rag.multi_query import split_query_to_ui_phrases
+from rag.trained_ui_searcher import TrainedUIElementSearcher
 from rag.ui_element_searcher import UIElementSearcher
-from rag.explainability import draw_similarity_boxes
-from rag.ocr_cleaning import normalize_ocr_text
-from rag.ui_visualization import make_ui_focus_image, make_full_debug_image
+from rag.ui_reranker import build_ui_semantic_results
+from rag.ui_visualization import draw_ui_results, show_page_screenshots_from_ui_index
+from rag.ocr_cleanup import cleanup_ocr_text
+
+
+PDF_DIR = "data_source"
+RAG_DIR = "data/all_pdf_rag"
+UI_INDEX_DIR = "data/ui_trained_index"
+UI_CHECKPOINT = "checkpoints/ui_siamese_ranker.pt"
+
+
+st.set_page_config(
+    page_title="Поиск по PDF-инструкциям",
+    page_icon="🔎",
+    layout="centered",
+)
 
 
 @st.cache_resource
-def load_text_searcher(rag_dir):
-    return HybridSearcher(rag_dir=rag_dir)
+def load_text_searcher():
+    return HybridSearcher(rag_dir=RAG_DIR)
+
+
+@st.cache_resource
+def load_ui_searcher():
+    return TrainedUIElementSearcher(
+        index_dir=UI_INDEX_DIR,
+        checkpoint=UI_CHECKPOINT,
+    )
 
 
 @st.cache_resource
@@ -24,683 +46,292 @@ def load_answer_engine():
     return AnswerEngine()
 
 
-@st.cache_resource
-def load_ui_searcher(checkpoint, index_dir):
-    return UIElementSearcher(
-        checkpoint=checkpoint,
-        index_dir=index_dir,
+def pdf_index_exists():
+    return (
+        Path(RAG_DIR, "items.jsonl").exists()
+        and Path(RAG_DIR, "embeddings.npy").exists()
     )
 
 
-def build_context(results):
-    parts = []
-    seen = set()
-
-    for result in results:
-        item = result["item"]
-        text = str(item.get("text", "")).strip()
-        key = (item.get("page"), text.lower())
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        parts.append(
-            f"[Страница {item.get('page')}, блок {item.get('block_id', item.get('block', '-'))}]\n{text}"
-        )
-
-    return "\n\n---\n\n".join(parts)
-
-
-def get_known_ui_phrases(ui_searcher):
-    if not getattr(ui_searcher, "items", None):
-        return []
-
-    return sorted({item.get("text", "") for item in ui_searcher.items if item.get("text")})
-
-
-def item_norm(item):
-    return item.get("normalized_text") or normalize_ocr_text(item.get("text", ""))
-
-
-def clean_target_phrases(phrases):
-    clean = []
-    seen = set()
-
-    for phrase in phrases:
-        norm = normalize_ocr_text(phrase)
-
-        if not norm:
-            continue
-
-        if norm in seen:
-            continue
-
-        seen.add(norm)
-        clean.append(phrase)
-
-    return clean
-
-
-def score_candidate_for_phrase(phrase, result):
-    item = result["item"]
-
-    phrase_norm = normalize_ocr_text(phrase)
-    item_text_norm = item_norm(item)
-
-    base = float(result.get("final_score", result.get("score", 0.0)))
-
-    phrase_tokens = set(phrase_norm.split())
-    item_tokens = set(item_text_norm.split())
-
-    score = base
-
-    if item_text_norm == phrase_norm:
-        score += 100.0
-
-    elif phrase_norm in item_text_norm:
-        score += 40.0
-
-    elif item_text_norm in phrase_norm:
-        score += 15.0
-
-    overlap = len(phrase_tokens & item_tokens)
-    score += overlap * 5.0
-
-    if phrase_tokens and phrase_tokens.issubset(item_tokens):
-        score += 30.0
-
-    if item.get("ui_type") == "button":
-        score += 4.0
-    elif item.get("ui_type") == "hyperlink":
-        score += 3.0
-    elif item.get("ui_type") in {"tab", "sidebar_item"}:
-        score += 2.0
-
-    # штраф за обрезки типа "интернет-поддержки"
-    if len(item_tokens) < len(phrase_tokens):
-        score -= 20.0
-
-    if len(item_text_norm.split()) > 7:
-        score -= 10.0
-
-    return score
-
-
-def get_candidates_for_phrase(ui_searcher, phrase, top_k=180):
-    results = ui_searcher.search(phrase, top_k=top_k)
-
-    phrase_norm = normalize_ocr_text(phrase)
-
-    filtered = []
-
-    for result in results:
-        item = result["item"]
-        item_text_norm = item_norm(item)
-        zone = item.get("zone_bbox")
-        bbox = item.get("bbox")
-
-        if not bbox:
-            continue
-
-        bw = bbox[2] - bbox[0]
-        bh = bbox[3] - bbox[1]
-
-        # 1) отбрасываем большие OCR-абзацы
-        if bw > 900 and bh > 80:
-            continue
-
-        # 2) отбрасываем длинные строки обычного текста
-        if bw / max(1, bh) > 12:
-            continue
-
-        # 3) отбрасываем мусорные куски текста
-        norm = item_text_norm
-
-        if len(norm) < 4:
-            continue
-
-        if norm.endswith(":"):
-            continue
-
-        if len(norm.split()) == 1 and norm in {
-            "пользователей",
-            "пользователь",
-            "интернет",
-            "поддержки",
-            "поддержка",
-            "под",
-        }:
-            continue
-
-        if zone and bbox:
-            # если элемент слишком близко к верхней границе зоны,
-            # это часто текст абзаца над скриншотом, а не UI
-            if bbox[1] < zone[1] + 25:
-                continue
-
-            zone_h = max(1, zone[3] - zone[1])
-            rel_y = (bbox[1] - zone[1]) / zone_h
-
-            if rel_y < 0.08 and item.get("ui_type") not in {"button", "input", "tab", "header"}:
-                continue
-
-        phrase_tokens = set(phrase_norm.split())
-        item_tokens = set(item_text_norm.split())
-
-        if not (
-                item_text_norm == phrase_norm
-                or phrase_norm in item_text_norm
-                or phrase_tokens.issubset(item_tokens)
-        ):
-            continue
-            result = dict(result)
-            result["matched_query"] = phrase
-            result["_phrase_score"] = score_candidate_for_phrase(phrase, result)
-            filtered.append(result)
-
-    if filtered:
-        filtered.sort(key=lambda r: r["_phrase_score"], reverse=True)
-        return filtered
-
-    fallback = []
-
-    for result in results[:30]:
-        result = dict(result)
-        result["matched_query"] = phrase
-        result["_phrase_score"] = score_candidate_for_phrase(phrase, result)
-        fallback.append(result)
-
-    fallback.sort(key=lambda r: r["_phrase_score"], reverse=True)
-
-    return fallback
-
-
-def choose_one_common_page(phrase_to_candidates, text_pages):
-    page_map = {}
-
-    for phrase, candidates in phrase_to_candidates.items():
-        for result in candidates:
-            item = result["item"]
-            page = item.get("page")
-
-            page_map.setdefault(page, {})
-            page_map[page].setdefault(phrase, [])
-            page_map[page][phrase].append(result)
-
-    best_page = None
-    best_key = None
-
-    for page, phrase_results in page_map.items():
-        coverage = len(phrase_results)
-        text_page_bonus = 1 if page in text_pages else 0
-
-        score_sum = 0.0
-
-        for phrase, results in phrase_results.items():
-            results.sort(key=lambda r: r["_phrase_score"], reverse=True)
-            score_sum += float(results[0]["_phrase_score"])
-
-        key = (coverage, text_page_bonus, score_sum)
-
-        if best_key is None or key > best_key:
-            best_key = key
-            best_page = page
-
-    if best_page is None:
-        return []
-
-    chosen = []
-
-    for phrase, candidates in phrase_to_candidates.items():
-        same_page = [
-            r for r in candidates
-            if r["item"].get("page") == best_page
-        ]
-
-        if same_page:
-            same_page.sort(key=lambda r: r["_phrase_score"], reverse=True)
-            chosen.append(same_page[0])
-
-    return chosen
-
-
-def search_ui_exactly_by_query(query, text_results, checkpoint, index_dir):
-    ui_searcher = load_ui_searcher(
-        checkpoint=checkpoint,
-        index_dir=index_dir,
+def ui_index_exists():
+    return (
+        Path(UI_INDEX_DIR, "ui_items.jsonl").exists()
+        and Path(UI_INDEX_DIR, "ui_embeddings.npy").exists()
     )
 
-    if getattr(ui_searcher, "model", None) is None:
-        return [], []
 
-    known_phrases = get_known_ui_phrases(ui_searcher)
-    raw_targets = split_query_to_ui_phrases(query, known_phrases)
-    target_phrases = clean_target_phrases(raw_targets)
-
-    text_pages = {
-        r["item"].get("page")
-        for r in text_results
-        if r.get("item")
-    }
-
-    phrase_to_candidates = {}
-
-    for phrase in target_phrases:
-        candidates = get_candidates_for_phrase(ui_searcher, phrase, top_k=180)
-
-        if candidates:
-            phrase_to_candidates[phrase] = candidates
-
-    ui_results = choose_one_common_page(
-        phrase_to_candidates=phrase_to_candidates,
-        text_pages=text_pages,
+def build_pdf_index():
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.build_pdf_rag_multi",
+            "--pdf-dir",
+            PDF_DIR,
+            "--out-dir",
+            RAG_DIR,
+        ],
+        check=True,
     )
 
-    return target_phrases, ui_results
 
-
-def filter_text_results_by_ui(text_results, ui_results):
-    if not ui_results:
-        return text_results
-
-    ui_pages = {
-        r["item"].get("page")
-        for r in ui_results
-        if r.get("item")
-    }
-
-    filtered = [
-        r for r in text_results
-        if r["item"].get("page") in ui_pages
-    ]
-
-    return filtered if filtered else text_results[:2]
-
-
-def show_answer_and_ui(query, text_results, top_k_ui, checkpoint, index_dir):
-    target_phrases, ui_results = search_ui_exactly_by_query(
-        query=query,
-        text_results=text_results,
-        checkpoint=checkpoint,
-        index_dir=index_dir,
+def build_ui_index():
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "scripts.build_ui_index_from_pdf_pages",
+            "--pdf-dir",
+            PDF_DIR,
+            "--out-dir",
+            UI_INDEX_DIR,
+            "--resume",
+            "--max-blocks-per-page",
+            "3",
+            "--scale",
+            "2",
+        ],
+        check=True,
     )
 
-    filtered_text_results = filter_text_results_by_ui(text_results, ui_results)
-    context = build_context(filtered_text_results)
 
-    st.subheader("Ответ по инструкции")
+def save_uploaded_files(uploaded_files):
+    pdf_dir = Path(PDF_DIR)
+    pdf_dir.mkdir(parents=True, exist_ok=True)
 
-    answer_engine = load_answer_engine()
-    raw_answer = answer_engine.generate(query, context)
+    saved = []
 
-    if ui_results:
-        unique_steps = []
-        seen = set()
+    for file in uploaded_files:
+        out_path = pdf_dir / file.name
 
-        # сортируем:
-        # кнопки > ссылки > вкладки > прочее
-        type_priority = {
-            "button": 0,
-            "input": 1,
-            "tab": 2,
-            "sidebar_item": 3,
-            "hyperlink": 4,
-        }
+        with open(out_path, "wb") as f:
+            f.write(file.getbuffer())
 
-        sorted_results = sorted(
-            ui_results,
-            key=lambda r: (
-                type_priority.get(
-                    r["item"].get("ui_type"),
-                    99
-                ),
-                -float(r.get("_phrase_score", 0.0))
-            )
-        )
+        saved.append(out_path.name)
 
-        for r in sorted_results:
-            item = r["item"]
+    return saved
 
-            text = str(item.get("text", "")).strip()
-            norm = normalize_ocr_text(text)
 
-            # мусор OCR
-            if len(norm) < 4:
-                continue
-
-            # слишком короткое слово
-            if len(norm.split()) == 1 and len(norm) < 10:
-                continue
-
-            # мусорные обрезки
-            if norm.endswith(":"):
-                continue
-
-            page = item.get("page")
-            ui_type = item.get("ui_type")
-
-            key = (page, norm)
-
-            if key in seen:
-                continue
-
-            seen.add(key)
-
-            unique_steps.append({
-                "page": page,
-                "text": text,
-                "ui_type": ui_type,
-            })
-
-        st.markdown(raw_answer)
-
-        if unique_steps:
-            st.markdown("### Мини-инструкция")
-
-            lines = []
-
-            for idx, step in enumerate(unique_steps, start=1):
-                text = step["text"]
-                page = step["page"]
-                ui_type = step["ui_type"]
-
-                action = "откройте"
-
-                if ui_type == "button":
-                    action = "нажмите кнопку"
-
-                elif ui_type == "hyperlink":
-                    action = "перейдите по ссылке"
-
-                elif ui_type in {"tab", "sidebar_item"}:
-                    action = "выберите пункт"
-
-                elif ui_type == "input":
-                    action = "заполните поле"
-
-                lines.append(
-                    f"{idx}. На странице {page} {action} «{text}»."
-                )
-
-            st.markdown("\n".join(lines))
-
-    else:
-        st.markdown(raw_answer)
-
-    st.subheader("Что нажать / где смотреть в интерфейсе")
-
-    st.info(
-        "Запрошено элементов: "
-        + str(len(target_phrases))
-        + " — "
-        + ", ".join(target_phrases)
-    )
-
-    if not ui_results:
-        st.warning("UI-элементы по этому вопросу не найдены.")
-        return context, []
-
-    ui_results = ui_results[:top_k_ui]
-
-    st.success(
-        "Найдено элементов на одной странице: "
-        + str(len(ui_results))
-        + " — "
-        + ", ".join([r["item"].get("text", "") for r in ui_results])
-    )
-
-    first_item = ui_results[0]["item"]
-    page_image = Path(first_item["page_image"])
-    matched_elements = [r["item"] for r in ui_results]
-
-    col1, col2 = st.columns([1.45, 1])
+def rebuild_buttons():
+    col1, col2 = st.columns(2)
 
     with col1:
-        if page_image.exists():
-            focus_path = make_ui_focus_image(
-                page_image_path=page_image,
-                matched_elements=matched_elements,
-                out_path="temp/ui_focus.png",
-            )
+        if st.button("Пересобрать PDF-индекс", use_container_width=True):
+            with st.spinner("Пересобираю PDF-индекс..."):
+                build_pdf_index()
+                st.cache_resource.clear()
 
-            st.image(
-                focus_path,
-                caption="Обрезанный интерфейс: выделены только элементы из запроса",
-                use_container_width=True,
-            )
-        else:
-            st.warning(f"Не найдена картинка страницы: {page_image}")
+            st.success("PDF-индекс пересобран.")
+            st.rerun()
 
     with col2:
-        for result in ui_results:
+        if st.button("Пересобрать UI-индекс", use_container_width=True):
+            with st.spinner("Пересобираю UI-индекс..."):
+                build_ui_index()
+                st.cache_resource.clear()
+
+            st.success("UI-индекс пересобран.")
+            st.rerun()
+
+
+def render_answer(response):
+    st.markdown("## Ответ")
+    st.markdown(f"**Источник:** {response['source']}")
+    st.markdown(response["short_answer"])
+
+    if response["steps"]:
+        st.markdown("### Что сделать")
+
+        for i, step in enumerate(response["steps"], start=1):
+            st.markdown(f"{i}. {step}")
+
+    with st.expander("Показать исходный текст найденного фрагмента"):
+        st.write(response["raw_text"])
+
+
+def get_page_window(response, window_before=2, window_after=4):
+    page = response.get("page")
+
+    if page is None or page == "":
+        return None
+
+    page = int(page)
+
+    start = max(1, page - window_before)
+    end = page + window_after
+
+    return list(range(start, end + 1))
+
+
+def render_ui_results(response, query):
+    if not ui_index_exists():
+        st.info("UI-индекс еще не собран. Нажмите «Пересобрать UI-индекс».")
+        return
+
+    searcher = load_ui_searcher()
+
+    pages = get_page_window(response, window_before=2, window_after=4)
+
+    raw_results = searcher.search(
+        query=query,
+        targets=response.get("targets", []),
+        page_filter=pages,
+        pdf_filter=response.get("pdf_name"),
+        top_k=60,
+    )
+
+    results = build_ui_semantic_results(
+        query=query,
+        response=response,
+        results=raw_results,
+        limit=6,
+    )
+
+    if results:
+        st.markdown("### Куда нажать в интерфейсе 1С")
+
+        for idx, result in enumerate(results, start=1):
             item = result["item"]
 
             st.markdown(
-                f"### {result.get('matched_query')} → {item.get('text')}\n"
-                f"type={item.get('ui_type', 'unknown')}  \n"
-                f"score={result.get('final_score', result.get('score', 0.0)):.4f}, "
-                f"siamese={result.get('siamese_score', 0.0):.4f}"
+                f"{idx}. **{cleanup_ocr_text(item.get('text'))}** "
+                f"<span style='color: #777;'>"
+                f"(стр. {item.get('page')}, экран {item.get('screenshot_idx')})"
+                f"</span>",
+                unsafe_allow_html=True,
             )
 
-            crop = Path(item.get("crop_image", ""))
+        images = draw_ui_results(results)
 
-            if crop.exists():
-                st.image(crop, caption="Кроп найденного элемента")
+        if images:
+            st.markdown("### Интерфейс 1С с найденными элементами")
 
-            with st.expander(f"Технические данные: {item.get('text')}"):
-                st.json(
-                    {
-                        "matched_query": result.get("matched_query"),
-                        "text": item.get("text"),
-                        "normalized_text": item.get("normalized_text"),
-                        "ui_type": item.get("ui_type"),
-                        "page": item.get("page"),
-                        "bbox": item.get("bbox"),
-                        "crop": item.get("crop_image"),
-                        "score": result.get("score"),
-                        "raw_score": result.get("raw_score"),
-                        "final_score": result.get("final_score"),
-                        "siamese_score": result.get("siamese_score"),
-                        "phrase_score": result.get("_phrase_score"),
-                    }
-                )
+            for image in images:
+                st.image(image["path"], use_container_width=True)
 
-    with st.expander("Debug: текстовые источники, использованные для ответа"):
-        for result in filtered_text_results:
-            item = result["item"]
-            st.markdown(f"**Страница {item.get('page')} · score={result.get('score', 0):.4f}**")
-            st.write(item.get("text", ""))
+        return
 
-    with st.expander("Debug: полная страница с выделением"):
-        if page_image.exists():
-            full_path = make_full_debug_image(
-                page_image_path=page_image,
-                matched_elements=matched_elements,
-                out_path="temp/ui_debug_full.png",
-            )
+    # Fallback: если OCR-элементы не нашли, но скриншоты на странице есть.
+    fallback_images = show_page_screenshots_from_ui_index(
+        ui_searcher=searcher,
+        pdf_name=response.get("pdf_name"),
+        page=response.get("page"),
+    )
 
-            st.image(
-                full_path,
-                caption="Полная страница для проверки bbox",
-                use_container_width=True,
-            )
-
-    with st.expander("Debug: similarity map"):
-        if page_image.exists():
-            attention = draw_similarity_boxes(
-                page_image,
-                ui_results,
-                max_items=len(ui_results),
-            )
-
-            st.image(
-                attention,
-                caption="Similarity map только по выбранным элементам",
-                use_container_width=True,
-            )
-
-    with st.expander("Debug: raw UI results"):
-        st.json(
-            [
-                {
-                    "matched_query": r.get("matched_query"),
-                    "text": r["item"].get("text"),
-                    "normalized_text": r["item"].get("normalized_text"),
-                    "ui_type": r["item"].get("ui_type"),
-                    "page": r["item"].get("page"),
-                    "bbox": r["item"].get("bbox"),
-                    "score": r.get("score"),
-                    "final_score": r.get("final_score"),
-                    "siamese_score": r.get("siamese_score"),
-                    "phrase_score": r.get("_phrase_score"),
-                    "crop": r["item"].get("crop_image"),
-                }
-                for r in ui_results
-            ]
+    if fallback_images:
+        st.markdown("### Интерфейс 1С на найденной странице")
+        st.info(
+            "Точные элементы не найдены в UI-индексе, поэтому показываю скриншоты "
+            "с найденной страницы PDF без новой разметки."
         )
 
-    return context, ui_results
+        for image in fallback_images:
+            st.image(image["path"], use_container_width=True)
+
+    else:
+        st.info("На ближайших скриншотах интерфейса не удалось найти подходящие элементы.")
 
 
-def show_text_source(result):
+def show_pdf_page(result):
+    if not result:
+        return
+
     item = result["item"]
 
-    st.divider()
+    pdf_name = item.get("pdf_name")
+    page = item.get("page")
 
-    st.markdown(
-        f"### Text source: страница {item.get('page')} · "
-        f"блок {item.get('block_id', item.get('block', '-'))} · score={result.get('score', 0):.4f}"
+    if not pdf_name or not page:
+        return
+
+    page_path = Path(RAG_DIR) / "pages" / f"{Path(pdf_name).stem}_page_{int(page):04d}.png"
+
+    if page_path.exists():
+        with st.expander("Показать страницу PDF целиком"):
+            st.image(str(page_path), use_container_width=True)
+
+
+def show_sources(results):
+    if not results:
+        return
+
+    with st.expander("Показать дополнительные найденные фрагменты"):
+        for result in results:
+            item = result["item"]
+
+            st.markdown(
+                f"**{item.get('pdf_name', 'PDF')} — страница {item.get('page', '?')}**"
+            )
+
+            st.write(item.get("text", ""))
+
+            st.caption(
+                f"score={result.get('score', 0):.4f}, "
+                f"bm25={result.get('bm25_score', 0):.4f}, "
+                f"dense={result.get('dense_score', 0):.4f}"
+            )
+
+
+def main():
+    st.title("Поиск по PDF-инструкциям")
+
+    st.caption(
+        "Система ищет ответ по всем PDF и показывает, куда нажать в интерфейсе 1С."
     )
 
-    if "dense_score" in result:
-        st.caption(
-            f"semantic={result.get('dense_score', 0):.4f} · "
-            f"bm25={result.get('bm25_score', 0):.4f}"
-        )
-
-    col1, col2 = st.columns([1.4, 1])
-
-    with col1:
-        page_image = Path(item.get("page_image", ""))
-
-        if page_image.exists():
-            st.image(Image.open(page_image), caption="Страница-источник")
-        else:
-            st.warning(f"Не найдена страница: {page_image}")
-
-    with col2:
-        st.markdown("#### Текст блока")
-        st.write(item.get("text", ""))
-
-        with st.expander("Технические данные"):
-            st.json(item)
-
-
-st.set_page_config(page_title="PDF RAG + UI Element Search", layout="wide")
-
-st.title("PDF RAG + UI Element Search")
-st.caption("Ответ по инструкции + поиск конкретных кнопок, ссылок и надписей интерфейса 1С.")
-
-rag_dir = st.text_input(
-    "Индекс PDF / RAG dir",
-    value="data/services_1c_test_rag",
-)
-
-checkpoint = st.text_input(
-    "Checkpoint Siamese модели",
-    value="checkpoints/ui_elements_siamese_services/best.pt",
-)
-
-index_dir = st.text_input(
-    "Индекс UI-элементов",
-    value="indexes/services_1c_test_ui",
-)
-
-query = st.text_input(
-    "Вопрос",
-    "где открыть интернет-поддержку пользователей",
-)
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    top_k_text = st.slider("Текстовых источников", 1, 12, 5)
-
-with col2:
-    top_k_ui = st.slider("UI-элементов", 1, 20, 8)
-
-with col3:
-    alpha = st.slider("Вес semantic", 0.0, 1.0, 0.35, 0.05)
-
-with col4:
-    show_sources = st.checkbox("Показать текстовые источники", value=True)
-
-if st.button("Искать"):
-    rag_path = Path(rag_dir)
-    checkpoint_path = Path(checkpoint)
-    index_path = Path(index_dir)
-
-    if not rag_path.exists():
-        st.error(f"Не найден RAG dir: {rag_path}")
-        st.stop()
-
-    possible_text_indexes = [
-        rag_path / "items.jsonl",
-        rag_path / "text_blocks.jsonl",
-        rag_path / "blocks.jsonl",
-        rag_path / "chunks.jsonl",
-    ]
-
-    if not any(p.exists() for p in possible_text_indexes):
-        st.error(
-            "Не найден текстовый индекс. Ожидался один из файлов: "
-            + ", ".join(str(p) for p in possible_text_indexes)
-        )
-        st.stop()
-
-    if not checkpoint_path.exists():
-        st.error(f"Не найден checkpoint: {checkpoint_path}")
-        st.stop()
-
-    if not index_path.exists():
-        st.error(f"Не найден index dir: {index_path}")
-        st.stop()
-
-    text_searcher = load_text_searcher(str(rag_path))
-
-    text_results = text_searcher.search(
-        query,
-        top_k=top_k_text,
-        alpha=alpha,
+    uploaded_files = st.file_uploader(
+        "Добавить PDF",
+        type=["pdf"],
+        accept_multiple_files=True,
     )
 
-    context, ui_results = show_answer_and_ui(
-        query=query,
-        text_results=text_results,
-        top_k_ui=top_k_ui,
-        checkpoint=str(checkpoint_path),
-        index_dir=str(index_path),
+    if uploaded_files:
+        saved = save_uploaded_files(uploaded_files)
+        st.success("PDF добавлены: " + ", ".join(saved))
+        st.info("После добавления PDF пересоберите оба индекса.")
+
+    rebuild_buttons()
+
+    if not pdf_index_exists():
+        st.warning("PDF-индекс еще не собран.")
+        st.stop()
+
+    query = st.text_input(
+        "Ваш вопрос",
+        placeholder="Например: как создать заявку на контроль",
     )
 
-    if show_sources:
-        st.subheader("Текстовые источники")
+    clicked = st.button("Найти ответ", use_container_width=True)
 
-        filtered_sources = filter_text_results_by_ui(text_results, ui_results)
+    if not clicked:
+        return
 
-        pages = sorted(
-            {
-                r["item"].get("page")
-                for r in filtered_sources
-                if r.get("item")
-            }
+    if not query.strip():
+        st.warning("Введите вопрос.")
+        return
+
+    with st.spinner("Ищу ответ и элементы интерфейса..."):
+        text_searcher = load_text_searcher()
+
+        results = text_searcher.search(
+            query=query,
+            top_k=7,
+            alpha=0.15,
         )
 
-        st.info("Использованные страницы: " + ", ".join(map(str, pages)))
+        response = load_answer_engine().build_response(
+            query=query,
+            results=results,
+        )
 
-        for result in filtered_sources:
-            show_text_source(result)
+    render_answer(response)
+    render_ui_results(response, query)
 
-    st.divider()
-    st.subheader("Контекст для ответа")
-    st.text_area("Контекст", context, height=320)
+    if results:
+        show_pdf_page(results[0])
+
+    show_sources(results[1:])
+
+
+if __name__ == "__main__":
+    main()
