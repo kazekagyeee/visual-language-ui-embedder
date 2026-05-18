@@ -1,0 +1,155 @@
+{
+  "total_time_sec": 704.3674182998948,
+  "steps": [
+    {
+      "name": "Build UI elements",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "rag.build_ui_elements",
+        "--rag-dir",
+        "data\\pdf_rag",
+        "--max-pages",
+        "40"
+      ],
+      "returncode": 0,
+      "time_sec": 387.8812290998176,
+      "stdout_tail": "OCR page 1: data\\pdf_rag\\pages\\page_0001.png\nOCR page 2: data\\pdf_rag\\pages\\page_0002.png\nOCR page 3: data\\pdf_rag\\pages\\page_0003.png\nOCR page 4: data\\pdf_rag\\pages\\page_0004.png\nOCR page 5: data\\pdf_rag\\pages\\page_0005.png\nOCR page 6: data\\pdf_rag\\pages\\page_0006.png\nOCR page 7: data\\pdf_rag\\pages\\page_0007.png\nOCR page 8: data\\pdf_rag\\pages\\page_0008.png\nOCR page 9: data\\pdf_rag\\pages\\page_0009.png\nOCR page 10: data\\pdf_rag\\pages\\page_0010.png\nOCR page 11: data\\pdf_rag\\pages\\page_0011.png\nOCR page 12: data\\pdf_rag\\pages\\page_0012.png\nOCR page 13: data\\pdf_rag\\pages\\page_0013.png\nOCR page 14: data\\pdf_rag\\pages\\page_0014.png\nOCR page 15: data\\pdf_rag\\pages\\page_0015.png\nOCR page 16: data\\pdf_rag\\pages\\page_0016.png\nOCR page 17: data\\pdf_rag\\pages\\page_0017.png\nOCR page 18: data\\pdf_rag\\pages\\page_0018.png\nOCR page 19: data\\pdf_rag\\pages\\page_0019.png\nOCR page 20: data\\pdf_rag\\pages\\page_0020.png\nOCR page 21: data\\pdf_rag\\pages\\page_0021.png\nOCR page 22: data\\pdf_rag\\pages\\page_0022.png\nOCR page 23: data\\pdf_rag\\pages\\page_0023.png\nOCR page 24: data\\pdf_rag\\pages\\page_0024.png\nOCR page 25: data\\pdf_rag\\pages\\page_0025.png\nOCR page 26: data\\pdf_rag\\pages\\page_0026.png\nOCR page 27: data\\pdf_rag\\pages\\page_0027.png\nOCR page 28: data\\pdf_rag\\pages\\page_0028.png\nOCR page 29: data\\pdf_rag\\pages\\page_0029.png\nOCR page 30: data\\pdf_rag\\pages\\page_0030.png\nOCR page 31: data\\pdf_rag\\pages\\page_0031.png\nOCR page 32: data\\pdf_rag\\pages\\page_0032.png\nOCR page 33: data\\pdf_rag\\pages\\page_0033.png\nOCR page 34: data\\pdf_rag\\pages\\page_0034.png\nOCR page 35: data\\pdf_rag\\pages\\page_0035.png\nOCR page 36: data\\pdf_rag\\pages\\page_0036.png\nOCR page 37: data\\pdf_rag\\pages\\page_0037.png\nOCR page 38: data\\pdf_rag\\pages\\page_0038.png\nOCR page 39: data\\pdf_rag\\pages\\page_0039.png\nOCR page 40: data\\pdf_rag\\pages\\page_0040.png\n================================================================================\nSaved UI elements: data\\pdf_rag\\ui_elements.jsonl\nRaw elements: 3099\nMerged elements: 2345\n",
+      "stderr_tail": "_(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\nC:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\lib\\site-packages\\torch\\utils\\data\\dataloader.py:775: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.\n  super().__init__(loader)\n"
+    },
+    {
+      "name": "Generate siamese pairs",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "training.make_ui_element_siamese_dataset",
+        "--rag-dir",
+        "data\\pdf_rag",
+        "--out",
+        "data/ui_element_pairs.jsonl",
+        "--negatives-per-positive",
+        "2",
+        "--hard-negatives-ratio",
+        "0.5",
+        "--max-elements",
+        "800"
+      ],
+      "returncode": 0,
+      "time_sec": 1.2605150998570025,
+      "stdout_tail": "================================================================================\nUI elements used: 800\nPairs: 2400\nSaved: data\\ui_element_pairs.jsonl\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "Split pairs",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "training.split_ui_element_pairs",
+        "--pairs",
+        "data/ui_element_pairs.jsonl"
+      ],
+      "returncode": 0,
+      "time_sec": 0.1380574000068009,
+      "stdout_tail": "Total: 2400\nTrain: 1920 -> data/ui_element_pairs.train.jsonl\nTest: 480 -> data/ui_element_pairs.test.jsonl\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "Train siamese",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "training.train_ui_siamese",
+        "--pairs",
+        "data/ui_element_pairs.train.jsonl",
+        "--out",
+        "checkpoints/ui_elements_siamese/best.pt",
+        "--epochs",
+        "10",
+        "--batch-size",
+        "16"
+      ],
+      "returncode": 0,
+      "time_sec": 226.4553463999182,
+      "stdout_tail": "Device: cpu\nepoch=001 loss=0.8700 acc=0.6625\nepoch=002 loss=0.8666 acc=0.6651\nepoch=003 loss=0.8566 acc=0.6651\nepoch=004 loss=0.8450 acc=0.6651\nepoch=005 loss=0.8066 acc=0.6693\nepoch=006 loss=0.7729 acc=0.6828\nepoch=007 loss=0.7447 acc=0.6906\nepoch=008 loss=0.7214 acc=0.7089\nepoch=009 loss=0.6958 acc=0.7219\nepoch=010 loss=0.6797 acc=0.7177\nSaved best model: checkpoints\\ui_elements_siamese\\best.pt\nBest acc: 0.7219\n",
+      "stderr_tail": "00:00, 3009.29it/s, Materializing param=encoder.layer.11.intermediate.dense.bias]\nLoading weights:  97%|#########6| 193/199 [00:00<00:00, 3024.96it/s, Materializing param=encoder.layer.11.intermediate.dense.weight]\nLoading weights:  97%|#########6| 193/199 [00:00<00:00, 3024.96it/s, Materializing param=encoder.layer.11.intermediate.dense.weight]\nLoading weights:  97%|#########7| 194/199 [00:00<00:00, 3040.63it/s, Materializing param=encoder.layer.11.output.LayerNorm.bias]    \nLoading weights:  97%|#########7| 194/199 [00:00<00:00, 2993.82it/s, Materializing param=encoder.layer.11.output.LayerNorm.bias]\nLoading weights:  98%|#########7| 195/199 [00:00<00:00, 3009.25it/s, Materializing param=encoder.layer.11.output.LayerNorm.weight]\nLoading weights:  98%|#########7| 195/199 [00:00<00:00, 3009.25it/s, Materializing param=encoder.layer.11.output.LayerNorm.weight]\nLoading weights:  98%|#########8| 196/199 [00:00<00:00, 3024.68it/s, Materializing param=encoder.layer.11.output.dense.bias]      \nLoading weights:  98%|#########8| 196/199 [00:00<00:00, 3024.68it/s, Materializing param=encoder.layer.11.output.dense.bias]\nLoading weights:  99%|#########8| 197/199 [00:00<00:00, 3040.11it/s, Materializing param=encoder.layer.11.output.dense.weight]\nLoading weights:  99%|#########8| 197/199 [00:00<00:00, 3040.11it/s, Materializing param=encoder.layer.11.output.dense.weight]\nLoading weights:  99%|#########9| 198/199 [00:00<00:00, 3055.54it/s, Materializing param=pooler.dense.bias]                   \nLoading weights:  99%|#########9| 198/199 [00:00<00:00, 3055.54it/s, Materializing param=pooler.dense.bias]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3070.98it/s, Materializing param=pooler.dense.weight]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3070.98it/s, Materializing param=pooler.dense.weight]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3070.98it/s, Materializing param=pooler.dense.weight]\n\u001b[1mBertModel LOAD REPORT\u001b[0m from: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\nKey                     | Status     |  | \n------------------------+------------+--+-\nembeddings.position_ids | UNEXPECTED |  | \n\n\u001b[3mNotes:\n- UNEXPECTED\u001b[3m\t:can be ignored when loading from different task/architecture; not ok if you expect identical arch.\u001b[0m\n\nBatches:   0%|          | 0/60 [00:00<?, ?it/s]\nBatches:   2%|1         | 1/60 [00:00<00:33,  1.76it/s]\nBatches:   3%|3         | 2/60 [00:00<00:17,  3.34it/s]\nBatches:   5%|5         | 3/60 [00:00<00:11,  4.78it/s]\nBatches:   7%|6         | 4/60 [00:00<00:09,  5.92it/s]\nBatches:   8%|8         | 5/60 [00:00<00:07,  6.92it/s]\nBatches:  12%|#1        | 7/60 [00:01<00:06,  8.73it/s]\nBatches:  15%|#5        | 9/60 [00:01<00:05,  9.47it/s]\nBatches:  18%|#8        | 11/60 [00:01<00:04, 10.35it/s]\nBatches:  22%|##1       | 13/60 [00:01<00:04, 10.66it/s]\nBatches:  25%|##5       | 15/60 [00:01<00:04, 11.01it/s]\nBatches:  28%|##8       | 17/60 [00:02<00:03, 10.97it/s]\nBatches:  32%|###1      | 19/60 [00:02<00:03, 11.68it/s]\nBatches:  35%|###5      | 21/60 [00:02<00:03, 11.99it/s]\nBatches:  38%|###8      | 23/60 [00:02<00:02, 12.81it/s]\nBatches:  42%|####1     | 25/60 [00:02<00:02, 13.52it/s]\nBatches:  45%|####5     | 27/60 [00:02<00:02, 14.05it/s]\nBatches:  48%|####8     | 29/60 [00:02<00:02, 14.84it/s]\nBatches:  52%|#####1    | 31/60 [00:02<00:01, 15.17it/s]\nBatches:  55%|#####5    | 33/60 [00:03<00:01, 16.29it/s]\nBatches:  58%|#####8    | 35/60 [00:03<00:01, 17.17it/s]\nBatches:  63%|######3   | 38/60 [00:03<00:01, 17.95it/s]\nBatches:  67%|######6   | 40/60 [00:03<00:01, 16.83it/s]\nBatches:  72%|#######1  | 43/60 [00:03<00:00, 18.65it/s]\nBatches:  77%|#######6  | 46/60 [00:03<00:00, 19.74it/s]\nBatches:  82%|########1 | 49/60 [00:03<00:00, 21.53it/s]\nBatches:  87%|########6 | 52/60 [00:03<00:00, 22.52it/s]\nBatches:  92%|#########1| 55/60 [00:04<00:00, 22.99it/s]\nBatches:  97%|#########6| 58/60 [00:04<00:00, 24.12it/s]\nBatches: 100%|##########| 60/60 [00:04<00:00, 14.02it/s]\n"
+    },
+    {
+      "name": "Evaluate siamese pair classifier",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "training.evaluate_ui_siamese",
+        "--pairs",
+        "data/ui_element_pairs.test.jsonl",
+        "--checkpoint",
+        "checkpoints/ui_elements_siamese/best.pt"
+      ],
+      "returncode": 0,
+      "time_sec": 27.429768200032413,
+      "stdout_tail": "Test pairs: 480\nAccuracy: 0.6354\n",
+      "stderr_tail": "layer.11.attention.self.key.bias]      \nLoading weights:  93%|#########3| 186/199 [00:00<00:00, 3793.22it/s, Materializing param=encoder.layer.11.attention.self.key.bias]\nLoading weights:  94%|#########3| 187/199 [00:00<00:00, 3813.62it/s, Materializing param=encoder.layer.11.attention.self.key.weight]\nLoading weights:  94%|#########3| 187/199 [00:00<00:00, 3813.62it/s, Materializing param=encoder.layer.11.attention.self.key.weight]\nLoading weights:  94%|#########4| 188/199 [00:00<00:00, 3834.01it/s, Materializing param=encoder.layer.11.attention.self.query.bias]\nLoading weights:  94%|#########4| 188/199 [00:00<00:00, 3834.01it/s, Materializing param=encoder.layer.11.attention.self.query.bias]\nLoading weights:  95%|#########4| 189/199 [00:00<00:00, 3854.40it/s, Materializing param=encoder.layer.11.attention.self.query.weight]\nLoading weights:  95%|#########4| 189/199 [00:00<00:00, 3854.40it/s, Materializing param=encoder.layer.11.attention.self.query.weight]\nLoading weights:  95%|#########5| 190/199 [00:00<00:00, 3797.36it/s, Materializing param=encoder.layer.11.attention.self.value.bias]  \nLoading weights:  95%|#########5| 190/199 [00:00<00:00, 3797.36it/s, Materializing param=encoder.layer.11.attention.self.value.bias]\nLoading weights:  96%|#########5| 191/199 [00:00<00:00, 3817.35it/s, Materializing param=encoder.layer.11.attention.self.value.weight]\nLoading weights:  96%|#########5| 191/199 [00:00<00:00, 3817.35it/s, Materializing param=encoder.layer.11.attention.self.value.weight]\nLoading weights:  96%|#########6| 192/199 [00:00<00:00, 3837.33it/s, Materializing param=encoder.layer.11.intermediate.dense.bias]    \nLoading weights:  96%|#########6| 192/199 [00:00<00:00, 3837.33it/s, Materializing param=encoder.layer.11.intermediate.dense.bias]\nLoading weights:  97%|#########6| 193/199 [00:00<00:00, 3857.32it/s, Materializing param=encoder.layer.11.intermediate.dense.weight]\nLoading weights:  97%|#########6| 193/199 [00:00<00:00, 3857.32it/s, Materializing param=encoder.layer.11.intermediate.dense.weight]\nLoading weights:  97%|#########7| 194/199 [00:00<00:00, 3877.30it/s, Materializing param=encoder.layer.11.output.LayerNorm.bias]    \nLoading weights:  97%|#########7| 194/199 [00:00<00:00, 3877.30it/s, Materializing param=encoder.layer.11.output.LayerNorm.bias]\nLoading weights:  98%|#########7| 195/199 [00:00<00:00, 3897.29it/s, Materializing param=encoder.layer.11.output.LayerNorm.weight]\nLoading weights:  98%|#########7| 195/199 [00:00<00:00, 3897.29it/s, Materializing param=encoder.layer.11.output.LayerNorm.weight]\nLoading weights:  98%|#########8| 196/199 [00:00<00:00, 3917.28it/s, Materializing param=encoder.layer.11.output.dense.bias]      \nLoading weights:  98%|#########8| 196/199 [00:00<00:00, 3917.28it/s, Materializing param=encoder.layer.11.output.dense.bias]\nLoading weights:  99%|#########8| 197/199 [00:00<00:00, 3860.05it/s, Materializing param=encoder.layer.11.output.dense.weight]\nLoading weights:  99%|#########8| 197/199 [00:00<00:00, 3860.05it/s, Materializing param=encoder.layer.11.output.dense.weight]\nLoading weights:  99%|#########9| 198/199 [00:00<00:00, 3879.64it/s, Materializing param=pooler.dense.bias]                   \nLoading weights:  99%|#########9| 198/199 [00:00<00:00, 3879.64it/s, Materializing param=pooler.dense.bias]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3899.24it/s, Materializing param=pooler.dense.weight]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3899.24it/s, Materializing param=pooler.dense.weight]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3899.24it/s, Materializing param=pooler.dense.weight]\n\u001b[1mBertModel LOAD REPORT\u001b[0m from: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\nKey                     | Status     |  | \n------------------------+------------+--+-\nembeddings.position_ids | UNEXPECTED |  | \n\n\u001b[3mNotes:\n- UNEXPECTED\u001b[3m\t:can be ignored when loading from different task/architecture; not ok if you expect identical arch.\u001b[0m\n"
+    },
+    {
+      "name": "Build UI element index",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "retrieval.build_ui_element_index",
+        "--rag-dir",
+        "data\\pdf_rag",
+        "--checkpoint",
+        "checkpoints/ui_elements_siamese/best.pt",
+        "--out-dir",
+        "indexes/ui_elements_siamese"
+      ],
+      "returncode": 0,
+      "time_sec": 28.039728899952024,
+      "stdout_tail": "Saved UI element index: indexes\\ui_elements_siamese\nItems: 2345\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "Generate automatic test queries",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "evaluation.generate_test_queries",
+        "--rag-dir",
+        "data\\pdf_rag",
+        "--out",
+        "data/test_queries.json",
+        "--max-single",
+        "20",
+        "--max-multi",
+        "15"
+      ],
+      "returncode": 0,
+      "time_sec": 0.13801109977066517,
+      "stdout_tail": "================================================================================\nSaved test queries: data\\test_queries.json\nQueries: 35\nSingle: 20\nMulti: 15\n",
+      "stderr_tail": ""
+    },
+    {
+      "name": "Benchmark full retrieval",
+      "command": [
+        "C:\\Users\\nasty\\PycharmProjects\\visual-language-ui-embedder\\.venv\\Scripts\\python.exe",
+        "-m",
+        "evaluation.benchmark_full_retrieval",
+        "--rag-dir",
+        "data\\pdf_rag",
+        "--queries",
+        "data/test_queries.json",
+        "--top-k-text",
+        "5",
+        "--top-k-ui",
+        "8",
+        "--alpha",
+        "0.35",
+        "--out-dir",
+        "reports"
+      ],
+      "returncode": 0,
+      "time_sec": 32.97240470023826,
+      "stdout_tail": "================================================================================\nFULL UI RETRIEVAL BENCHMARK\n================================================================================\nqueries: 35\nsingle_queries: 20\nmulti_queries: 15\nall_targets_accuracy: 0.5142857142857142\nany_target_accuracy: 0.5142857142857142\nmean_target_recall: 0.5142857142857142\nmean_mrr: 0.4142857142857143\navg_time_sec: 0.2060204228519329\nmedian_time_sec: 0.21174259996041656\ntop_k_text: 5\ntop_k_ui: 8\nalpha: 0.35\n================================================================================\nSaved: reports\\ui_retrieval_metrics.json\nSaved: reports\\ui_retrieval_metrics.csv\nSaved: reports\\error_analysis.md\n",
+      "stderr_tail": "layer.11.attention.self.key.bias]      \nLoading weights:  93%|#########3| 186/199 [00:00<00:00, 3633.63it/s, Materializing param=encoder.layer.11.attention.self.key.bias]\nLoading weights:  94%|#########3| 187/199 [00:00<00:00, 3653.17it/s, Materializing param=encoder.layer.11.attention.self.key.weight]\nLoading weights:  94%|#########3| 187/199 [00:00<00:00, 3653.17it/s, Materializing param=encoder.layer.11.attention.self.key.weight]\nLoading weights:  94%|#########4| 188/199 [00:00<00:00, 3672.70it/s, Materializing param=encoder.layer.11.attention.self.query.bias]\nLoading weights:  94%|#########4| 188/199 [00:00<00:00, 3672.70it/s, Materializing param=encoder.layer.11.attention.self.query.bias]\nLoading weights:  95%|#########4| 189/199 [00:00<00:00, 3692.24it/s, Materializing param=encoder.layer.11.attention.self.query.weight]\nLoading weights:  95%|#########4| 189/199 [00:00<00:00, 3692.24it/s, Materializing param=encoder.layer.11.attention.self.query.weight]\nLoading weights:  95%|#########5| 190/199 [00:00<00:00, 3711.77it/s, Materializing param=encoder.layer.11.attention.self.value.bias]  \nLoading weights:  95%|#########5| 190/199 [00:00<00:00, 3711.77it/s, Materializing param=encoder.layer.11.attention.self.value.bias]\nLoading weights:  96%|#########5| 191/199 [00:00<00:00, 3731.31it/s, Materializing param=encoder.layer.11.attention.self.value.weight]\nLoading weights:  96%|#########5| 191/199 [00:00<00:00, 3731.31it/s, Materializing param=encoder.layer.11.attention.self.value.weight]\nLoading weights:  96%|#########6| 192/199 [00:00<00:00, 3750.84it/s, Materializing param=encoder.layer.11.intermediate.dense.bias]    \nLoading weights:  96%|#########6| 192/199 [00:00<00:00, 3750.84it/s, Materializing param=encoder.layer.11.intermediate.dense.bias]\nLoading weights:  97%|#########6| 193/199 [00:00<00:00, 3698.14it/s, Materializing param=encoder.layer.11.intermediate.dense.weight]\nLoading weights:  97%|#########6| 193/199 [00:00<00:00, 3698.14it/s, Materializing param=encoder.layer.11.intermediate.dense.weight]\nLoading weights:  97%|#########7| 194/199 [00:00<00:00, 3717.30it/s, Materializing param=encoder.layer.11.output.LayerNorm.bias]    \nLoading weights:  97%|#########7| 194/199 [00:00<00:00, 3717.30it/s, Materializing param=encoder.layer.11.output.LayerNorm.bias]\nLoading weights:  98%|#########7| 195/199 [00:00<00:00, 3736.46it/s, Materializing param=encoder.layer.11.output.LayerNorm.weight]\nLoading weights:  98%|#########7| 195/199 [00:00<00:00, 3736.46it/s, Materializing param=encoder.layer.11.output.LayerNorm.weight]\nLoading weights:  98%|#########8| 196/199 [00:00<00:00, 3755.62it/s, Materializing param=encoder.layer.11.output.dense.bias]      \nLoading weights:  98%|#########8| 196/199 [00:00<00:00, 3755.62it/s, Materializing param=encoder.layer.11.output.dense.bias]\nLoading weights:  99%|#########8| 197/199 [00:00<00:00, 3774.79it/s, Materializing param=encoder.layer.11.output.dense.weight]\nLoading weights:  99%|#########8| 197/199 [00:00<00:00, 3774.79it/s, Materializing param=encoder.layer.11.output.dense.weight]\nLoading weights:  99%|#########9| 198/199 [00:00<00:00, 3793.95it/s, Materializing param=pooler.dense.bias]                   \nLoading weights:  99%|#########9| 198/199 [00:00<00:00, 3793.95it/s, Materializing param=pooler.dense.bias]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3813.11it/s, Materializing param=pooler.dense.weight]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3813.11it/s, Materializing param=pooler.dense.weight]\nLoading weights: 100%|##########| 199/199 [00:00<00:00, 3741.39it/s, Materializing param=pooler.dense.weight]\n\u001b[1mBertModel LOAD REPORT\u001b[0m from: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2\nKey                     | Status     |  | \n------------------------+------------+--+-\nembeddings.position_ids | UNEXPECTED |  | \n\n\u001b[3mNotes:\n- UNEXPECTED\u001b[3m\t:can be ignored when loading from different task/architecture; not ok if you expect identical arch.\u001b[0m\n"
+    }
+  ]
+}

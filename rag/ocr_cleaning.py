@@ -6,34 +6,23 @@ import re
 OCR_REPLACEMENTS = {
     "г0сты": "госты",
     "гостъ": "госты",
-    "гост": "госты",
-    "контроля-": "контроля",
     "показатепи": "показатели",
     "показатсли": "показатели",
     "входнои": "входной",
-    "входнои контроль": "входной контроль",
 }
 
 
 def normalize_ocr_text(text: str) -> str:
-    text = text.strip()
-    text = text.replace("ё", "е")
-    text = text.replace("—", "-")
-    text = text.replace("–", "-")
-    text = re.sub(r"\s+", " ", text)
-
-    lower = text.lower()
+    text = str(text).strip().lower().replace("ё", "е")
+    text = text.replace("—", "-").replace("–", "-")
+    text = text.strip("[]{}()«»\"'")
+    text = re.sub(r"[:;,.]+$", "", text)
 
     for bad, good in OCR_REPLACEMENTS.items():
-        lower = lower.replace(bad, good)
+        text = re.sub(rf"\b{re.escape(bad)}\b", good, text)
 
-    lower = re.sub(r"([а-яa-z])-$", r"\1", lower)
-    lower = re.sub(r"[^а-яa-z0-9\s\-]+", "", lower)
-    lower = re.sub(r"\s+", " ", lower)
+    text = re.sub(r"([а-яa-z])-$", r"\1", text)
+    text = re.sub(r"[^а-яa-z0-9\s\-]+", " ", text)
+    text = re.sub(r"\s+", " ", text)
 
-    return lower.strip()
-
-
-def display_text(text: str) -> str:
-    cleaned = normalize_ocr_text(text)
-    return cleaned[:1].upper() + cleaned[1:] if cleaned else text
+    return text.strip()

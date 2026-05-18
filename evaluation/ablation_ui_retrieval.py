@@ -2,146 +2,328 @@
 
 import argparse
 import json
-import re
+import time
 from pathlib import Path
 
-from rag.ui_element_searcher import UIElementSearcher
+from sentence_transformers import SentenceTransformer
+
 from rag.ocr_cleaning import normalize_ocr_text
+from rag.ui_element_searcher import UIElementSearcher
 
 
-def text_match(pred, target):
-    pred = normalize_ocr_text(pred)
-    target = normalize_ocr_text(target)
-    return target in pred or pred in target
+SEMANTIC_ALIASES = {
+    "добавить": [
+        "добавить",
+        "новый элемент",
+        "создать новую запись",
+        "добавление",
+    ],
+    "госты": [
+        "госты",
+        "нормативы",
+        "нормативные документы",
+        "стандарты",
+        "требования",
+    ],
+    "показатели контроля": [
+        "показатели контроля",
+        "параметры проверки",
+        "требования контроля",
+        "характеристики контроля",
+    ],
+    "заявки на контроль": [
+        "заявки на контроль",
+        "созданные проверки",
+        "заявки проверки",
+        "проверки качества",
+    ],
+    "виды контроля": [
+        "виды контроля",
+        "типы проверок",
+        "список типов контроля",
+    ],
+    "группы прочности": [
+        "группы прочности",
+        "прочность материалов",
+        "справочник прочности",
+    ],
+    "входной контроль": [
+        "входной контроль",
+        "контроль качества",
+        "раздел контроля",
+    ],
+    "выполнения входного контроля": [
+        "выполнения входного контроля",
+        "выполненные проверки",
+        "результаты проверок",
+    ],
+    "акты входного контроля": [
+        "акты входного контроля",
+        "акты проверки",
+        "документы проверки",
+    ],
+}
 
 
-def is_correct(result, target_text):
-    return text_match(result["item"].get("text", ""), target_text)
+def load_json(path):
+    with open(path, "r", encoding="utf-8-sig") as f:
+        return json.load(f)
 
 
-def ocr_only_search(query, items, top_k):
-    q = normalize_ocr_text(query)
-    q_tokens = set(q.split())
+def load_jsonl(path):
+    rows = []
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for line in f:
+            if line.strip():
+                rows.append(json.loads(line))
+    return rows
+
+
+def item_norm(item):
+    return item.get("normalized_text") or normalize_ocr_text(item.get("text", ""))
+
+
+def target_match(item, target):
+    target_norm = target.get("normalized_text") or normalize_ocr_text(target["text"])
+    target_pages = target.get("target_pages") or []
+
+    p_norm = item_norm(item)
+
+    text_ok = (
+        p_norm == target_norm
+        or target_norm in p_norm
+        or p_norm in target_norm
+    )
+
+    page_ok = not target_pages or item.get("page") in target_pages
+
+    return text_ok and page_ok
+
+
+def evaluate_predictions(targets, predictions):
+    hits = 0
+    rr_sum = 0.0
+
+    for target in targets:
+        rank = None
+
+        for i, pred in enumerate(predictions, start=1):
+            if target_match(pred["item"], target):
+                rank = i
+                break
+
+        if rank is not None:
+            hits += 1
+            rr_sum += 1.0 / rank
+
+    recall = hits / max(1, len(targets))
+
+    return {
+        "all_targets_exact": hits == len(targets),
+        "target_recall": recall,
+        "mrr": rr_sum / max(1, len(targets)),
+    }
+
+
+def ocr_only_full_query(query, items, top_k):
+    q_norm = normalize_ocr_text(query)
+    q_tokens = set(q_norm.split())
 
     results = []
 
     for item in items:
-        t = normalize_ocr_text(item.get("text", ""))
-        t_tokens = set(t.split())
+        t_norm = item_norm(item)
+        t_tokens = set(t_norm.split())
 
-        if not q_tokens:
-            score = 0.0
-        else:
-            score = len(q_tokens & t_tokens) / len(q_tokens)
+        score = 0.0
 
-        if q in t or t in q:
-            score += 1.0
+        if q_norm == t_norm:
+            score += 10.0
+        elif q_norm in t_norm or t_norm in q_norm:
+            score += 5.0
+
+        if q_tokens:
+            score += len(q_tokens & t_tokens) / len(q_tokens)
 
         results.append({
             "score": score,
             "item": item,
         })
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    results.sort(key=lambda r: r["score"], reverse=True)
     return results[:top_k]
 
 
-def evaluate_method(name, queries, search_fn, top_k):
-    top1 = top3 = topk = 0
-    ranks = []
+def semantic_alias_search(query, items, top_k):
+    q_norm = normalize_ocr_text(query)
+    q_tokens = set(q_norm.split())
 
-    details = []
+    results = []
 
-    for q in queries:
-        results = search_fn(q["query"], top_k)
-        rank = None
+    for item in items:
+        t_norm = item_norm(item)
 
-        for i, r in enumerate(results, start=1):
-            if is_correct(r, q["target_text"]):
-                rank = i
-                break
+        score = 0.0
 
-        top1 += int(rank is not None and rank <= 1)
-        top3 += int(rank is not None and rank <= 3)
-        topk += int(rank is not None and rank <= top_k)
+        aliases = SEMANTIC_ALIASES.get(t_norm, [])
 
-        if rank is not None:
-            ranks.append(rank)
+        for alias in aliases:
+            alias_norm = normalize_ocr_text(alias)
+            alias_tokens = set(alias_norm.split())
 
-        details.append({
-            "query": q["query"],
-            "target": q["target_text"],
-            "rank": rank,
-            "best": results[0]["item"].get("text") if results else None,
-            "best_page": results[0]["item"].get("page") if results else None,
+            if alias_norm in q_norm or q_norm in alias_norm:
+                score += 5.0
+
+            if q_tokens:
+                score += len(q_tokens & alias_tokens) / len(q_tokens)
+
+        results.append({
+            "score": score,
+            "item": item,
         })
 
-    n = max(len(queries), 1)
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:top_k]
+
+
+def sentence_transformer_search(query, items, model, top_k):
+    texts = [
+        item.get("text", "")
+        for item in items
+    ]
+
+    query_vec = model.encode([query], normalize_embeddings=True)[0]
+    text_vecs = model.encode(texts, normalize_embeddings=True)
+
+    results = []
+
+    for item, vec in zip(items, text_vecs):
+        score = float(query_vec @ vec)
+
+        results.append({
+            "score": score,
+            "item": item,
+        })
+
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:top_k]
+
+
+def siamese_search(query, searcher, top_k):
+    return searcher.search(query, top_k=top_k)
+
+
+def evaluate_method(name, queries, search_fn, top_k):
+    started = time.perf_counter()
+
+    rows = []
+    all_acc = 0
+    recalls = []
+    mrrs = []
+
+    for q in queries:
+        predictions = search_fn(q, top_k)
+        ev = evaluate_predictions(q["targets"], predictions)
+
+        all_acc += int(ev["all_targets_exact"])
+        recalls.append(ev["target_recall"])
+        mrrs.append(ev["mrr"])
+
+        rows.append({
+            "query": q["query"],
+            "type": q.get("type"),
+            "targets": q["targets"],
+            "predictions": [
+                {
+                    "text": p["item"].get("text"),
+                    "normalized_text": item_norm(p["item"]),
+                    "page": p["item"].get("page"),
+                    "score": p.get("score"),
+                    "final_score": p.get("final_score"),
+                    "siamese_score": p.get("siamese_score"),
+                }
+                for p in predictions
+            ],
+            **ev,
+        })
+
+    elapsed = time.perf_counter() - started
+    n = max(1, len(queries))
 
     return {
         "method": name,
-        "top1": top1 / n,
-        "top3": top3 / n,
-        f"top{top_k}": topk / n,
-        "mrr": sum(1 / r for r in ranks) / n if ranks else 0.0,
-        "mean_rank_found_only": sum(ranks) / len(ranks) if ranks else None,
-        "found": len(ranks),
-        "details": details,
+        "queries": len(queries),
+        "all_targets_accuracy": all_acc / n,
+        "mean_target_recall": sum(recalls) / n,
+        "mean_mrr": sum(mrrs) / n,
+        "avg_time_sec_per_query": elapsed / n,
+        "details": rows,
     }
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--queries", default="data/test_queries.json")
+    parser.add_argument("--queries", default="data/semantic_test_queries.json")
     parser.add_argument("--rag-dir", default="data/pdf_rag")
     parser.add_argument("--top-k", type=int, default=10)
-    parser.add_argument("--out", default="reports/ablation_ui_retrieval.json")
+    parser.add_argument("--out", default="reports/ablation_semantic_ui_retrieval.json")
     args = parser.parse_args()
 
-    with open(args.queries, "r", encoding="utf-8-sig") as f:
-        queries = json.load(f)
+    queries = load_json(args.queries)
+    items = load_jsonl(Path(args.rag_dir) / "ui_elements.jsonl")
 
-    items = []
-    with open(Path(args.rag_dir) / "ui_elements.jsonl", "r", encoding="utf-8") as f:
-        for line in f:
-            items.append(json.loads(line))
-
-    siamese_searcher = UIElementSearcher()
+    searcher = UIElementSearcher()
+    st_model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
     reports = []
 
     reports.append(evaluate_method(
-        "ocr_only",
+        "ocr_only_full_query",
         queries,
-        lambda query, top_k: ocr_only_search(query, items, top_k),
+        lambda q, top_k: ocr_only_full_query(q["query"], items, top_k),
+        args.top_k,
+    ))
+
+    reports.append(evaluate_method(
+        "semantic_alias_baseline",
+        queries,
+        lambda q, top_k: semantic_alias_search(q["query"], items, top_k),
+        args.top_k,
+    ))
+
+    reports.append(evaluate_method(
+        "sentence_transformer_text",
+        queries,
+        lambda q, top_k: sentence_transformer_search(q["query"], items, st_model, top_k),
         args.top_k,
     ))
 
     reports.append(evaluate_method(
         "siamese_hybrid",
         queries,
-        lambda query, top_k: siamese_searcher.search(query, top_k=top_k),
+        lambda q, top_k: siamese_search(q["query"], searcher, top_k),
         args.top_k,
     ))
 
-    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(args.out, "w", encoding="utf-8") as f:
+    with open(out_path, "w", encoding="utf-8-sig") as f:
         json.dump(reports, f, ensure_ascii=False, indent=2)
 
     print("=" * 80)
-    print("ABLATION STUDY")
+    print("SEMANTIC ABLATION STUDY")
     print("=" * 80)
 
-    for report in reports:
-        print(report["method"])
-        print(f"Top-1: {report['top1']:.4f}")
-        print(f"Top-3: {report['top3']:.4f}")
-        print(f"Top-{args.top_k}: {report[f'top{args.top_k}']:.4f}")
-        print(f"MRR: {report['mrr']:.4f}")
+    for r in reports:
+        print(r["method"])
+        print(f"  all_targets_accuracy: {r['all_targets_accuracy']:.4f}")
+        print(f"  mean_target_recall:   {r['mean_target_recall']:.4f}")
+        print(f"  mean_mrr:             {r['mean_mrr']:.4f}")
+        print(f"  avg_time_sec/query:   {r['avg_time_sec_per_query']:.4f}")
         print()
 
-    print(f"Saved: {args.out}")
+    print(f"Saved: {out_path}")
 
 
 if __name__ == "__main__":
