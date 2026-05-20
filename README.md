@@ -1,116 +1,258 @@
-# Visual Language UI Embedder
+﻿# Vision-Language Semantic UI Retrieval
 
-Пайплайн на базе семейства моделей **Qwen2.5-VL** для извлечения контекстных семантических эмбеддингов UI-компонентов. Система позволяет преобразовывать элементы интерфейса в векторное представление, учитывающее как визуальные особенности самого элемента, так и глобальный контекст всего экрана и текстовое описание задачи.
+Проект реализует систему семантического поиска элементов графического интерфейса
+по текстовому запросу пользователя.
 
-## 🎯 Назначение
+Тема диплома:
 
-Проект предназначен для создания продвинутых RAG-систем (Retrieval-Augmented Generation), работающих с графическими интерфейсами. Основная цель — обеспечить высокоточный поиск UI-элементов по текстовым запросам («кнопка входа», «поле ввода email» и т.д.), понимая их функциональное назначение в конкретном контексте.
-
----
-
-## 🏗️ Архитектура
-
-Система реализует иерархический подход к кодированию визуальной информации:
-
-1.  **Smart Resize**: Динамическое изменение размера изображения с сохранением пропорций и выравниванием по сетке патчей (28px).
-2.  **UIED Detection**: Детекция границ UI-компонентов с использованием методов компьютерного зрения (OpenCV).
-3.  **Box-Aware Visual Encoder (ViT-32L)**:
-    *   Извлечение признаков всего изображения (**Global Sequence**).
-    *   **ROI Pooling**: Прицельное извлечение патчей для каждого обнаруженного bbox (**Local Sequences**).
-4.  **Spatial Merge & MLP**: Группировка пространственных патчей 2×2 и проекция в пространство LLM (3584-dim для 7B версии).
-5.  **Headless LLM (Qwen 28L)**: Обработка визуальных токенов совместно с текстовым промптом для получения финальных контекстных эмбеддингов.
-
-### Схема последовательности (Inference)
-```mermaid
-graph TD
-    Img[Входное изображение] --> Resize[Smart Resize]
-    Resize --> ViT[Vision Encoder]
-    Resize --> UIED[UIED Detector]
-    UIED -- Bboxes --> ROI[ROI Pooling]
-    ViT -- Full Map --> ROI
-    ROI -- Bbox Patches --> Merger[Spatial Merge & Projector]
-    Merger --> LLM[Headless Qwen LLM]
-    Text[Текстовый контекст] --> LLM
-    LLM --> Out[Эмбеддинги компонентов]
-```
-
-**Интерактивная диаграмма:** Откройте [vit_diagram.html](vit_diagram.html) для детального изучения внутренней структуры ViT и Spatial Merge.
+Использование Vision-Language моделей для семантического поиска
+запрошенного фрагмента графического интерфейса по запросу.
 
 ---
 
-## 🚀 Ключевые возможности
+# Идея проекта
 
-*   **Мульти-модальность**: Полная поддержка Qwen2.5-VL (2B, 3B, 7B, 72B). Автоматическая настройка архитектуры под выбранную модель.
-*   **Контекстуализация**: В отличие от простых кропов (CLIP), каждый эмбеддинг "знает", что находится вокруг него.
-*   **Обучение (LoRA Triplet Loss)**: Встроенный механизм дообучения для выравнивания (alignment) текстовых запросов и визуальных признаков.
-*   **Генерация описаний**: Скрипт для автоматического создания текстовых описаний для каждого UI-элемента на основе VLM.
-*   **Предпроцессинг**: Интегрированная очистка и нормализация текста для улучшения качества поиска.
+Система анализирует PDF-документы с интерфейсами 1С,
+выделяет UI-элементы и позволяет находить:
 
----
+- кнопки,
+- ссылки,
+- пункты меню,
+- поля,
+- вкладки,
+- надписи интерфейса
 
-## 🛠️ Основные модули
+по естественному запросу пользователя.
 
-### 🔹 Инференс и обработка
-- `main.py`: Основной пайплайн генерации эмбеддингов.
-- `box_aware_visual_encoder.py`: Реализация кастомного энкодера с поддержкой ROI Pooling и Spatial Merge.
-- `uied_detector.py`: Детектор UI-компонентов на базе OpenCV.
-- `config.py`: Централизованная конфигурация (выбор модели, параметры девайса, промпты).
+Пример:
 
-### 🔹 Обучение (Training)
-- `training/train_lora_triplet.py`: Скрипт для fine-tuning модели. Использует **Triplet Margin Loss** и **LoRA** для эффективного обучения на ограниченном VRAM (от 15 ГБ).
-- `training/triplet_dataset.json`: Пример структуры данных для обучения (Anchor, Positive, Negative).
+Запрос:
+"где находятся ГОСТы и показатели контроля"
 
-### 🔹 Генерация и утилиты
-- `generate_embeddings_text.py`: Генерация текстовых описаний для компонентов (VLM-to-Text).
-- `text_preprocessing.py`: NLP-пайплайн для очистки текстового контекста.
-- `verify_embeddings.py`: Скрипт для проверки косинусного сходства векторов.
+Результат:
+- текстовый ответ,
+- cropped interface view,
+- выделенные UI-элементы.
 
 ---
 
-## ⚡ Быстрый старт
+# Архитектура
 
-### 1. Установка зависимостей
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Запуск базового инференса
-Положите изображение в `input_images/image_20_2.png` и запустите:
-```bash
-python main.py
-```
-Результат будет сохранен в `output/embeddings.json`.
-
-### 3. Запуск дообучения (Fine-tuning)
-Для выравнивания текстовых и визуальных пространств:
-```bash
-python training/train_lora_triplet.py
-```
+PDF
+│
+├── OCR (EasyOCR)
+│
+├── UI element extraction
+│
+├── UI crops
+│
+├── Siamese embeddings
+│
+├── Vector database
+│
+├── Hybrid retrieval
+│
+└── Streamlit visualization
 
 ---
 
-## ⚙️ Конфигурация (`config.py`)
+# Pipeline
 
-Вы можете переключаться между моделями разного размера через алиасы:
-```python
-# Варианты: "2B", "3B", "7B", "72B"
-config = UIEmbedderConfig.from_model_name("3B", device="cuda")
-```
+1. PDF indexing
 
-**Ключевые параметры:**
-- `use_global_summary`: Добавлять ли "глобальный" токен изображения в начало последовательности (улучшает контекст).
-- `use_retrieval_prompt`: Использовать ли специальные инструкции для поиска (E5-style).
-- `max_dist`: Чувствительность группировки элементов в UIED-детекторе.
+Файл:
+rag/build_pdf_rag.py
 
----
-
-## ⚠️ Важные примечания
-
-1.  **VRAM**: Для работы с 7B моделью требуется ~16-20 ГБ VRAM. Для обучения (даже с LoRA) рекомендуется использовать 2B или 3B версию на картах с 16 ГБ.
-2.  **Retrieval Alignment**: Базовая модель Qwen2.5-VL обучена на генерацию. Для качественного RAG поиска настоятельно рекомендуется использовать обученный LoRA-адаптер из секции Training.
-3.  **Debug Decoding**: Файл `decoded_embeddings.json` в папке `debug` служит только для визуальной проверки того, что видит модель. Не используйте эти тексты для поиска.
+Создает:
+- страницы PDF;
+- текстовые блоки;
+- embeddings.
 
 ---
 
-## 📝 Лицензия
-MIT
+2. UI extraction
+
+Файл:
+rag/build_ui_elements.py
+
+EasyOCR выделяет:
+- кнопки;
+- гиперссылки;
+- menu items;
+- labels.
+
+Создаются crop-изображения UI-элементов.
+
+---
+
+3. Siamese dataset
+
+Файл:
+training/make_ui_element_siamese_dataset.py
+
+Создаются пары:
+
+Positive:
+"ГОСТы" ↔ crop ГОСТы
+
+Negative:
+"ГОСТы" ↔ crop другого элемента
+
+---
+
+4. Siamese training
+
+Файл:
+models/siamese_ui_encoder.py
+
+Два encoder:
+
+text encoder
+image encoder
+
+Они переводят:
+- текст;
+- изображения интерфейса
+
+в общее embedding-пространство.
+
+---
+
+5. Vector DB
+
+Файлы:
+rag/ui_vector_db.py
+retrieval/build_ui_vector_db.py
+
+Создается локальная vector database:
+
+vector_db/ui_elements/
+
+Содержит:
+- metadata;
+- UI embeddings;
+- OCR text;
+- bbox.
+
+---
+
+6. Hybrid retrieval
+
+Файл:
+rag/ui_element_searcher.py
+
+Комбинируются:
+- semantic similarity;
+- OCR similarity;
+- siamese similarity.
+
+---
+
+7. Multi-query retrieval
+
+Файл:
+rag/multi_query.py
+
+Запрос:
+"ГОСТы и показатели контроля"
+
+разбивается на:
+- ГОСТы
+- Показатели контроля
+
+---
+
+8. Visualization
+
+Файл:
+rag/streamlit_pdf_rag.py
+
+Показывает:
+- текстовый ответ;
+- cropped interface;
+- highlighted UI elements;
+- debug info.
+
+---
+
+# Dataset
+
+Каждый элемент датасета содержит:
+
+- OCR text;
+- UI crop;
+- bbox;
+- page;
+- ui_type;
+- label.
+
+Пример:
+
+{
+  "text": "ГОСТы",
+  "ui_type": "hyperlink",
+  "page": 3,
+  "bbox": [x0, y0, x1, y1]
+}
+
+---
+
+# Benchmark
+
+Файл:
+evaluation/benchmark_ui_retrieval.py
+
+Метрики:
+- Top-1 accuracy
+- Top-3 accuracy
+- Top-k accuracy
+
+---
+
+# First run
+
+python scripts/first_run_ui_pipeline.py
+
+---
+
+# Run Streamlit
+
+python -m streamlit run rag/streamlit_pdf_rag.py
+
+---
+
+# Основная идея
+
+Система переводит:
+- текстовый запрос;
+- изображение интерфейса
+
+в общее embedding-пространство.
+
+После этого поиск выполняется по близости векторов.
+
+---
+
+# Что умеет система
+
+- semantic UI retrieval;
+- OCR GUI parsing;
+- multimodal retrieval;
+- siamese retrieval;
+- vector search;
+- interface highlighting;
+- cropped interface visualization.
+
+---
+
+# Соответствие теме диплома
+
+Проект реализует:
+
+- Vision-Language retrieval;
+- semantic GUI search;
+- OCR-based UI parsing;
+- Siamese neural network;
+- vector database;
+- multimodal embeddings;
+- semantic interface retrieval.

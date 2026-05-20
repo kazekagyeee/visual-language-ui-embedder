@@ -9,12 +9,10 @@ import streamlit as st
 from rag.answer_engine import AnswerEngine
 from rag.hybrid_search import HybridSearcher
 from rag.trained_ui_searcher import TrainedUIElementSearcher
-from rag.ui_element_searcher import UIElementSearcher
 from rag.ui_reranker import build_ui_semantic_results
 from rag.ui_visualization import draw_ui_results, show_page_screenshots_from_ui_index
 from rag.ocr_cleanup import cleanup_ocr_text
-from rag.query_time_ocr_highlight import highlight_targets_on_screenshots
-from rag.pdf_layer_highlight import highlight_pdf_layer_targets
+from rag.vlm_verifier import VLMVerifier, apply_vlm_verification
 
 
 PDF_DIR = "data_source"
@@ -46,6 +44,11 @@ def load_ui_searcher():
 @st.cache_resource
 def load_answer_engine():
     return AnswerEngine()
+
+
+@st.cache_resource
+def load_vlm_verifier(enabled):
+    return VLMVerifier(enabled=enabled)
 
 
 def pdf_index_exists():
@@ -82,16 +85,13 @@ def build_ui_index():
         [
             sys.executable,
             "-m",
-            "scripts.build_ui_index_from_pdf_pages",
-            "--pdf-dir",
-            PDF_DIR,
+            "retrieval.build_trained_ui_index",
+            "--ui-index-dir",
+            "data/ui_index",
+            "--checkpoint",
+            UI_CHECKPOINT,
             "--out-dir",
             UI_INDEX_DIR,
-            "--resume",
-            "--max-blocks-per-page",
-            "3",
-            "--scale",
-            "2",
         ],
         check=True,
     )
@@ -128,7 +128,7 @@ def rebuild_buttons():
 
     with col2:
         if st.button("Пересобрать UI-индекс", use_container_width=True):
-            with st.spinner("Пересобираю UI-индекс..."):
+            with st.spinner("Пересобираю обученный UI-индекс..."):
                 build_ui_index()
                 st.cache_resource.clear()
 
@@ -151,28 +151,31 @@ def render_answer(response):
         st.write(response["raw_text"])
 
 
-def get_page_window(response, window_before=2, window_after=4):
+def get_page_window(response, window_before=3, window_after=5):
     page = response.get("page")
 
     if page is None or page == "":
         return None
 
     page = int(page)
-
     start = max(1, page - window_before)
     end = page + window_after
 
     return list(range(start, end + 1))
 
 
-def render_ui_results(response, query):
+def render_ui_results(response, query, use_vlm=False):
     if not ui_index_exists():
         st.info("UI-индекс еще не собран. Нажмите «Пересобрать UI-индекс».")
         return
 
     searcher = load_ui_searcher()
 
-    pages = get_page_window(response, window_before=3, window_after=5)
+    pages = get_page_window(
+        response,
+        window_before=3,
+        window_after=5,
+    )
 
     raw_results = searcher.search(
         query=query,
@@ -189,16 +192,35 @@ def render_ui_results(response, query):
         limit=8,
     )
 
+    if use_vlm and results:
+        with st.spinner("Проверяю найденные элементы через VLM..."):
+            verifier = load_vlm_verifier(enabled=True)
+
+            results = apply_vlm_verification(
+                query=query,
+                results=results,
+                verifier=verifier,
+                weight=0.25,
+            )
+
+    st.markdown("### Интерфейс 1С")
+
     if results:
-        st.markdown("### Куда нажать в интерфейсе 1С")
+        st.markdown("#### Найденные элементы")
 
         for idx, result in enumerate(results, start=1):
             item = result["item"]
 
+            vlm_text = ""
+
+            if use_vlm:
+                vlm_score = result.get("vlm_score", "-")
+                vlm_text = f", vlm={vlm_score}"
+
             st.markdown(
                 f"{idx}. **{cleanup_ocr_text(item.get('text'))}** "
                 f"<span style='color: #777;'>"
-                f"(стр. {item.get('page')}, экран {item.get('screenshot_idx')})"
+                f"(стр. {item.get('page')}, экран {item.get('screenshot_idx')}{vlm_text})"
                 f"</span>",
                 unsafe_allow_html=True,
             )
@@ -206,73 +228,56 @@ def render_ui_results(response, query):
         images = draw_ui_results(results)
 
         if images:
-            st.markdown("### Интерфейс 1С с найденными элементами")
+            st.markdown("#### Скриншоты с найденными элементами")
 
             for image in images:
                 st.image(image["path"], use_container_width=True)
 
-        # Если нашли не все цели, дополнительно показываем скриншоты исходной страницы.
-        if len(results) < len(response.get("targets", [])):
+    missing_count = max(
+        0,
+        len(response.get("targets", [])) - len(results),
+    )
+
+    if missing_count > 0:
+        st.markdown("#### Дополнительные скриншоты по шагам")
+
+        st.info(
+            "Часть элементов не удалось точно распознать. "
+            "Ниже показаны ближайшие скриншоты инструкции."
+        )
+
+        shown = set()
+
+        for page in pages:
             fallback_images = show_page_screenshots_from_ui_index(
                 ui_searcher=searcher,
                 pdf_name=response.get("pdf_name"),
-                page=response.get("page"),
+                page=page,
             )
 
-            fallback_paths = [x["path"] for x in fallback_images]
+            for image in fallback_images:
+                if image["path"] in shown:
+                    continue
 
-            ocr_marked = highlight_targets_on_screenshots(
-                screenshot_paths=fallback_paths,
-                targets=response.get("targets", []),
-            )
-
-            if ocr_marked:
-                st.markdown("### Интерфейс 1С с OCR-разметкой")
-
-                for image in ocr_marked:
-                    st.image(image["path"], use_container_width=True)
-
-                return
-
-            if fallback_images:
-                with st.expander("Показать скриншоты найденной страницы без разметки"):
-                    for image in fallback_images:
-                        st.image(image["path"], use_container_width=True)
+                shown.add(image["path"])
+                st.image(image["path"], use_container_width=True)
 
         return
 
-    fallback_images = show_page_screenshots_from_ui_index(
-        ui_searcher=searcher,
-        pdf_name=response.get("pdf_name"),
-        page=response.get("page"),
-    )
-
-    pdf_layer_images = highlight_pdf_layer_targets(
-        pdf_dir=PDF_DIR,
-        response=response,
-        targets=response.get("targets", []),
-    )
-
-    if pdf_layer_images:
-        st.markdown("### Интерфейс 1С с разметкой по PDF-слою")
-
-        for image in pdf_layer_images:
-            st.image(image["path"], use_container_width=True)
-
-        return
-
-    if fallback_images:
-        st.markdown("### Интерфейс 1С на найденной странице")
-        st.info(
-            "Точные элементы не найдены в UI-индексе, поэтому показываю скриншоты "
-            "с найденной страницы PDF без новой разметки."
+    if not results:
+        fallback_images = show_page_screenshots_from_ui_index(
+            ui_searcher=searcher,
+            pdf_name=response.get("pdf_name"),
+            page=response.get("page"),
         )
 
-        for image in fallback_images:
-            st.image(image["path"], use_container_width=True)
+        if fallback_images:
+            st.info("Точные элементы не найдены, показываю скриншоты найденной страницы.")
 
-    else:
-        st.info("На ближайших скриншотах интерфейса не удалось найти подходящие элементы.")
+            for image in fallback_images:
+                st.image(image["path"], use_container_width=True)
+        else:
+            st.info("На ближайших скриншотах интерфейса не удалось найти подходящие элементы.")
 
 
 def show_pdf_page(result):
@@ -331,9 +336,18 @@ def main():
     if uploaded_files:
         saved = save_uploaded_files(uploaded_files)
         st.success("PDF добавлены: " + ", ".join(saved))
-        st.info("После добавления PDF пересоберите оба индекса.")
+        st.info("После добавления PDF пересоберите индексы.")
 
     rebuild_buttons()
+
+    use_vlm = st.checkbox(
+        "Использовать VLM-проверку скриншотов",
+        value=False,
+        help=(
+            "Опциональный Qwen2.5-VL reranker. "
+            "Может работать медленно и требовать много памяти."
+        ),
+    )
 
     if not pdf_index_exists():
         st.warning("PDF-индекс еще не собран.")
@@ -368,7 +382,7 @@ def main():
         )
 
     render_answer(response)
-    render_ui_results(response, query)
+    render_ui_results(response, query, use_vlm=use_vlm)
 
     if results:
         show_pdf_page(results[0])
