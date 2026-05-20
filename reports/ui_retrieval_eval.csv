@@ -1,0 +1,13 @@
+﻿query,source,source_pdf,expected_pdf,pdf_ok,expected,found,precision,recall,f1,mrr,hit_at_1,hit_at_3,hit_at_5,success
+где найти входной контроль,"instruction.pdf, страница 14",instruction.pdf,instruction.pdf,True,Входной контроль,Входной контроль,1.0,1.0,1.0,1.0,True,True,True,True
+как создать заявку на контроль,"instruction.pdf, страница 14",instruction.pdf,instruction.pdf,True,Входной контроль | АРМ Входной контроль | Заявки на контроль | Создать,Входной контроль | АРМ Входной контроль | Заявки на контроль | Создать,1.0,1.0,1.0,1.0,True,True,True,True
+где находится арм входной контроль,"instruction.pdf, страница 14",instruction.pdf,instruction.pdf,True,АРМ Входной контроль,Входной контроль | АРМ Входной контроль | Заявки на контроль | Создать,0.5,1.0,0.6667,1.0,True,True,True,True
+где найти заявки на контроль,"instruction.pdf, страница 100",instruction.pdf,instruction.pdf,True,Заявки на контроль,Входной контроль | АРМ Входной контроль | Заявки на контроль | Создать,0.25,1.0,0.4,0.3333,False,True,True,True
+как открыть показатели контроля,"instruction.pdf, страница 18",instruction.pdf,instruction.pdf,True,Показатели контроля,,0.0,0.0,0.0,0.0,False,False,False,False
+где найти монитор интернет поддержки,"services_1c.pdf, страница 188",services_1c.pdf,services_1c.pdf,True,Монитор Интернет-поддержки,Монитор Интернет-поддержки,1.0,1.0,1.0,1.0,True,True,True,True
+как подключить интернет поддержку,"services_1c.pdf, страница 188",services_1c.pdf,services_1c.pdf,True,Интернет-поддержка пользователей | Подключить Интернет-поддержку,Интернет-поддержка пользователей | Подключить Интернет-поддержку,1.0,1.0,1.0,1.0,True,True,True,True
+как создать нового контрагента,"services_1c.pdf, страница 22",services_1c.pdf,services_1c.pdf,True,Контрагенты | Создать | ИНН,Контрагенты | ИНн | Создать,1.0,1.0,1.0,1.0,True,True,True,True
+как заполнить реквизиты контрагента по инн,"services_1c.pdf, страница 27",services_1c.pdf,services_1c.pdf,True,Контрагенты | Создать | ИНН,Контрагенты | ИНн | Создать,1.0,1.0,1.0,1.0,True,True,True,True
+где найти контрагентов,"reports_book.pdf, страница 286",reports_book.pdf,services_1c.pdf,False,Контрагенты,"UUD ""Атлашт ООО ""Атлант"" (Контрагенты)",1.0,1.0,1.0,1.0,True,True,True,True
+где находится поле инн контрагента,"services_1c.pdf, страница 22",services_1c.pdf,services_1c.pdf,True,ИНН,ИНн,1.0,1.0,1.0,1.0,True,True,True,True
+как создать организацию,"instruction.pdf, страница 78",instruction.pdf,services_1c.pdf,False,Организации | Создать,,0.0,0.0,0.0,0.0,False,False,False,False

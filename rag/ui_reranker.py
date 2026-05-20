@@ -2,6 +2,7 @@
 
 import re
 from difflib import SequenceMatcher
+
 from rag.ocr_cleanup import cleanup_ocr_text
 
 
@@ -12,59 +13,74 @@ def normalize(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def tokens(text):
-    return set(normalize(text).split())
+def words(text):
+    return [w for w in normalize(text).split() if len(w) > 2]
 
 
 def fuzzy_ratio(a, b):
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
 
+def word_similarity(a, b):
+    aw = words(a)
+    bw = words(b)
+
+    if not aw or not bw:
+        return 0.0
+
+    scores = []
+
+    for target_word in aw:
+        best = 0.0
+
+        for text_word in bw:
+            sim = SequenceMatcher(None, target_word, text_word).ratio()
+            best = max(best, sim)
+
+        scores.append(best)
+
+    return sum(scores) / max(1, len(scores))
+
+
+def mandatory_token_ok(target, text):
+    target_n = normalize(target)
+    text_n = normalize(text)
+
+    # Не требуем буквальное совпадение, а проверяем fuzzy-наличие ключевого слова.
+    rules = ["монитор", "заявк", "создат", "заполн", "инн", "контрагент"]
+
+    for key in rules:
+        if key in target_n:
+            return any(SequenceMatcher(None, key, w).ratio() >= 0.72 for w in words(text_n))
+
+    return True
+
+
 def is_noise_item(item):
     text = normalize(item.get("text", ""))
+
+    if "заполтенже" in text:
+        return True
+
+    if "реквизитов" in text and "контрагента" in text:
+        return True
 
     if len(text) < 2:
         return True
 
-    if text in {
-        "и", "в", "на", "по", "из", "для", "как", "что",
-        "стр", "рис", "ok", "оk", "еще", "закрыть"
-    }:
+    if text in {"и", "в", "на", "по", "из", "для", "как", "что", "стр", "рис", "ok", "оk", "еще", "закрыть"}:
         return True
 
     if text.isdigit():
         return True
 
-    if len(text.split()) > 7:
+    if len(text.split()) > 9:
         return True
 
     if "000000" in text:
         return True
 
-    if "от " in text and any(ch.isdigit() for ch in text):
-        return True
-
     return False
-
-
-def mandatory_token_ok(target, text):
-    target = normalize(target)
-    text = normalize(text)
-
-    rules = {
-        "монитор": ["монитор"],
-        "заявк": ["заявк"],
-        "создать": ["создат"],
-        "заполнить": ["заполн"],
-        "инн": ["инн"],
-        "контрагент": ["контрагент"],
-    }
-
-    for key, required_parts in rules.items():
-        if key in target:
-            return any(part in text for part in required_parts)
-
-    return True
 
 
 def match_score(target, text):
@@ -81,22 +97,15 @@ def match_score(target, text):
         return 1.0
 
     if target_n in text_n:
-        return 0.86
+        return 0.95
 
     if text_n in target_n:
-        return 0.72
+        return 0.80
 
-    fuzzy = fuzzy_ratio(target_n, text_n)
+    full = fuzzy_ratio(target_n, text_n)
+    word = word_similarity(target_n, text_n)
 
-    target_tokens = tokens(target_n)
-    text_tokens = tokens(text_n)
-
-    if not target_tokens or not text_tokens:
-        return 0.0
-
-    overlap = len(target_tokens & text_tokens) / max(1, len(target_tokens))
-
-    return max(overlap, fuzzy * 0.60)
+    return max(full, word)
 
 
 def extract_targets(response):
@@ -126,45 +135,33 @@ def chain_order(text):
 
     if text == "входной контроль":
         return 10
-
     if "арм" in text and "входной" in text and "контрол" in text:
         return 20
-
     if "заявк" in text and "контрол" in text:
         return 30
-
     if text == "создать":
         return 40
-
-    if text.startswith("создать "):
+    if "создать" in text:
         return 45
-
     if "контрагент" in text:
         return 10
-
     if text == "инн" or "начните отсюда" in text:
         return 20
-
     if "заполнить" in text:
         return 30
-
-    if "интернет-поддержка пользователей" in text:
+    if "интернет" in text and "поддерж" in text and "пользоват" in text:
         return 10
-
-    if "монитор интернет-поддержки" in text:
+    if "монитор" in text and "интернет" in text:
         return 20
-
-    if "подключить интернет-поддержку" in text:
+    if "подключ" in text and "интернет" in text:
         return 30
 
     return 100
 
 
 def choose_best_for_target(target, results, used):
-    target_n = normalize(target)
-
-    exact_candidates = []
-    soft_candidates = []
+    exact = []
+    fuzzy = []
 
     for result in results:
         item = result["item"]
@@ -183,25 +180,25 @@ def choose_best_for_target(target, results, used):
         if key in used:
             continue
 
-        score = match_score(target, text)
+        m = match_score(target, text)
 
-        if score < 0.55:
+        if m < 0.50:
             continue
 
-        final = (
-            score * 1.5
+        score = (
+            m * 1.7
             + result.get("score", 0) * 0.30
-            + result.get("target_score", 0) * 0.30
+            + result.get("target_score", 0) * 0.25
         )
 
-        candidate = (final, result)
+        candidate = (score, result)
 
-        if text_n == target_n:
-            exact_candidates.append(candidate)
+        if normalize(target) == text_n:
+            exact.append(candidate)
         else:
-            soft_candidates.append(candidate)
+            fuzzy.append(candidate)
 
-    candidates = exact_candidates or soft_candidates
+    candidates = exact or fuzzy
 
     if not candidates:
         return None
@@ -221,7 +218,7 @@ def choose_best_for_target(target, results, used):
     return best
 
 
-def build_ui_semantic_results(query, response, results, limit=6):
+def build_ui_semantic_results(query, response, results, limit=8):
     targets = extract_targets(response)
 
     if not targets:

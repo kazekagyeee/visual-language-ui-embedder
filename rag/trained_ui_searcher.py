@@ -9,12 +9,28 @@ import torch
 from sentence_transformers import SentenceTransformer
 
 from models.ui_siamese_ranker import UISiameseRanker
+from rag.ocr_cleanup import cleanup_ocr_text
+
+
+STOP_WORDS = {
+    "где", "как", "что", "найти", "создать", "сделать",
+    "нужно", "надо", "можно", "в", "на", "по", "для",
+    "и", "или", "а", "из", "к", "у",
+}
 
 
 def normalize(text):
+    text = cleanup_ocr_text(text)
     text = str(text).lower().replace("ё", "е")
     text = re.sub(r"[^а-яa-z0-9\s\-]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def tokenize(text):
+    return [
+        x for x in normalize(text).split()
+        if len(x) > 2 and x not in STOP_WORDS
+    ]
 
 
 def load_jsonl(path):
@@ -38,6 +54,60 @@ def page_allowed(item_page, page_filter):
         return item_page in {int(p) for p in page_filter}
 
     return item_page == int(page_filter)
+
+
+def lexical_score(query, text):
+    q = set(tokenize(query))
+    t = set(tokenize(text))
+
+    if not q or not t:
+        return 0.0
+
+    return len(q & t) / max(1, len(q))
+
+
+def target_score(targets, text):
+    if not targets:
+        return 0.0
+
+    text_n = normalize(text)
+    best = 0.0
+
+    for target in targets:
+        target_n = normalize(target)
+
+        if not target_n or not text_n:
+            continue
+
+        if target_n == text_n:
+            best = max(best, 1.0)
+        elif target_n in text_n:
+            best = max(best, 0.90)
+        elif text_n in target_n:
+            best = max(best, 0.75)
+        else:
+            tw = set(tokenize(target_n))
+            xw = set(tokenize(text_n))
+
+            if tw and xw:
+                best = max(best, len(tw & xw) / max(1, len(tw)))
+
+    return best
+
+
+def is_probably_bad(item):
+    text = normalize(item.get("text", ""))
+
+    if len(text) < 2:
+        return True
+
+    if len(text.split()) > 10:
+        return True
+
+    if "000000" in text and "инн" not in text:
+        return True
+
+    return False
 
 
 class TrainedUIElementSearcher:
@@ -68,7 +138,7 @@ class TrainedUIElementSearcher:
         targets=None,
         page_filter=None,
         pdf_filter=None,
-        top_k=40,
+        top_k=80,
     ):
         targets = targets or []
         query_text = " ".join([query] + targets)
@@ -82,7 +152,7 @@ class TrainedUIElementSearcher:
             q = torch.tensor(base, dtype=torch.float32).to(self.device)
             q_vec = self.model.encode_query(q).cpu().numpy()[0]
 
-        scores = self.embeddings @ q_vec
+        trained_scores = self.embeddings @ q_vec
 
         results = []
 
@@ -93,15 +163,44 @@ class TrainedUIElementSearcher:
             if not page_allowed(item.get("page", -1), page_filter):
                 continue
 
-            score = float(scores[idx])
+            if is_probably_bad(item):
+                continue
+
+            text = item.get("text", "")
+
+            trained = float(trained_scores[idx])
+            targ = target_score(targets, text)
+            lex = lexical_score(query, text)
+
+            ui_bonus = 0.0
+            if item.get("ui_type") == "button":
+                ui_bonus += 0.08
+            elif item.get("ui_type") in {"menu_item", "link", "merged_text"}:
+                ui_bonus += 0.05
+
+            # Главное: trained score не должен забивать точные target-совпадения.
+            final = (
+                0.45 * trained
+                + 0.75 * targ
+                + 0.20 * lex
+                + ui_bonus
+            )
+
+            # target rescue: даже если trained score слабый, точный target обязан попасть наверх.
+            if targ >= 0.90:
+                final += 0.60
+
+            if targ <= 0 and lex <= 0.02 and trained < 0.15:
+                continue
 
             results.append(
                 {
                     "item": item,
-                    "score": score,
-                    "dense_score": score,
-                    "target_score": 0.0,
-                    "trained_score": score,
+                    "score": float(final),
+                    "dense_score": float(trained),
+                    "target_score": float(targ),
+                    "lexical_score": float(lex),
+                    "trained_score": float(trained),
                 }
             )
 

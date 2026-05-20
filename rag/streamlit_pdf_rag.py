@@ -13,6 +13,8 @@ from rag.ui_element_searcher import UIElementSearcher
 from rag.ui_reranker import build_ui_semantic_results
 from rag.ui_visualization import draw_ui_results, show_page_screenshots_from_ui_index
 from rag.ocr_cleanup import cleanup_ocr_text
+from rag.query_time_ocr_highlight import highlight_targets_on_screenshots
+from rag.pdf_layer_highlight import highlight_pdf_layer_targets
 
 
 PDF_DIR = "data_source"
@@ -170,21 +172,21 @@ def render_ui_results(response, query):
 
     searcher = load_ui_searcher()
 
-    pages = get_page_window(response, window_before=2, window_after=4)
+    pages = get_page_window(response, window_before=3, window_after=5)
 
     raw_results = searcher.search(
         query=query,
         targets=response.get("targets", []),
         page_filter=pages,
         pdf_filter=response.get("pdf_name"),
-        top_k=60,
+        top_k=100,
     )
 
     results = build_ui_semantic_results(
         query=query,
         response=response,
         results=raw_results,
-        limit=6,
+        limit=8,
     )
 
     if results:
@@ -209,14 +211,55 @@ def render_ui_results(response, query):
             for image in images:
                 st.image(image["path"], use_container_width=True)
 
+        # Если нашли не все цели, дополнительно показываем скриншоты исходной страницы.
+        if len(results) < len(response.get("targets", [])):
+            fallback_images = show_page_screenshots_from_ui_index(
+                ui_searcher=searcher,
+                pdf_name=response.get("pdf_name"),
+                page=response.get("page"),
+            )
+
+            fallback_paths = [x["path"] for x in fallback_images]
+
+            ocr_marked = highlight_targets_on_screenshots(
+                screenshot_paths=fallback_paths,
+                targets=response.get("targets", []),
+            )
+
+            if ocr_marked:
+                st.markdown("### Интерфейс 1С с OCR-разметкой")
+
+                for image in ocr_marked:
+                    st.image(image["path"], use_container_width=True)
+
+                return
+
+            if fallback_images:
+                with st.expander("Показать скриншоты найденной страницы без разметки"):
+                    for image in fallback_images:
+                        st.image(image["path"], use_container_width=True)
+
         return
 
-    # Fallback: если OCR-элементы не нашли, но скриншоты на странице есть.
     fallback_images = show_page_screenshots_from_ui_index(
         ui_searcher=searcher,
         pdf_name=response.get("pdf_name"),
         page=response.get("page"),
     )
+
+    pdf_layer_images = highlight_pdf_layer_targets(
+        pdf_dir=PDF_DIR,
+        response=response,
+        targets=response.get("targets", []),
+    )
+
+    if pdf_layer_images:
+        st.markdown("### Интерфейс 1С с разметкой по PDF-слою")
+
+        for image in pdf_layer_images:
+            st.image(image["path"], use_container_width=True)
+
+        return
 
     if fallback_images:
         st.markdown("### Интерфейс 1С на найденной странице")
