@@ -1,0 +1,27 @@
+{
+  "pdf_count": 3,
+  "text_chunks": 1380,
+  "ui_items": 50104,
+  "pages_with_text": 881,
+  "pages_with_ui": 696,
+  "screenshots": 1443,
+  "ui_types": {
+    "text": 30691,
+    "menu_item": 3618,
+    "button": 1128,
+    "merged_text": 13443,
+    "small_text": 93,
+    "native_ocr": 1131
+  },
+  "ui_sources": {
+    "base": 35394,
+    "postprocess_merge": 13443,
+    "small_text_enhance": 24,
+    "native_pdf_image_ocr": 1243
+  },
+  "pdf_distribution": {
+    "instruction.pdf": 208,
+    "reports_book.pdf": 909,
+    "services_1c.pdf": 263
+  }
+}

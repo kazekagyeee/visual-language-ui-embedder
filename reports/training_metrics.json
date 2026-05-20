@@ -1,0 +1,11 @@
+﻿{
+  "model": "UISiameseRanker",
+  "base_embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "epochs": 25,
+  "best_val_acc": 0.8864,
+  "final_train_loss": 0.1748,
+  "final_val_loss": 0.2784,
+  "final_val_acc": 0.8604,
+  "training_pairs": 1541,
+  "checkpoint": "checkpoints/ui_siamese_ranker.pt"
+}
