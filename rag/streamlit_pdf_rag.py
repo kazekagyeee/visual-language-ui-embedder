@@ -13,6 +13,8 @@ from rag.ui_reranker import build_ui_semantic_results
 from rag.ui_visualization import draw_ui_results, show_page_screenshots_from_ui_index
 from rag.ocr_cleanup import cleanup_ocr_text
 from rag.vlm_verifier import VLMVerifier, apply_vlm_verification
+from rag.domain_response import enrich_response_with_domain
+from rag.final_ui_filter import final_filter_ui_results
 
 
 PDF_DIR = "data_source"
@@ -179,7 +181,7 @@ def render_ui_results(response, query, use_vlm=False):
 
     raw_results = searcher.search(
         query=query,
-        targets=response.get("targets", []),
+        targets=response.get("primary_targets", response.get("targets", [])),
         page_filter=pages,
         pdf_filter=response.get("pdf_name"),
         top_k=100,
@@ -190,6 +192,12 @@ def render_ui_results(response, query, use_vlm=False):
         response=response,
         results=raw_results,
         limit=8,
+    )
+
+    results = final_filter_ui_results(
+        results,
+        targets=response.get("primary_targets", response.get("targets", [])),
+        limit=6,
     )
 
     if use_vlm and results:
@@ -380,6 +388,7 @@ def main():
             query=query,
             results=results,
         )
+    response = enrich_response_with_domain(query, response)
 
     render_answer(response)
     render_ui_results(response, query, use_vlm=use_vlm)

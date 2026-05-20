@@ -9,6 +9,8 @@ from rag.hybrid_search import HybridSearcher
 from rag.trained_ui_searcher import TrainedUIElementSearcher
 from rag.ui_reranker import build_ui_semantic_results
 from rag.ocr_cleanup import cleanup_ocr_text
+from rag.domain_response import enrich_response_with_domain
+from rag.final_ui_filter import final_filter_ui_results
 
 
 TEST_CASES = [
@@ -147,10 +149,11 @@ def evaluate_case(case, text_searcher, ui_searcher):
     )
 
     response = AnswerEngine().build_response(query, text_results)
+    response = enrich_response_with_domain(query, response)
 
     raw_ui = ui_searcher.search(
         query=query,
-        targets=response.get("targets", []),
+        targets=response.get("primary_targets", response.get("targets", [])),
         page_filter=page_window(response["page"]),
         pdf_filter=response["pdf_name"],
         top_k=100,

@@ -6,6 +6,8 @@ from rag.answer_engine import AnswerEngine
 from rag.hybrid_search import HybridSearcher
 from rag.ui_element_searcher import UIElementSearcher
 from rag.ui_reranker import build_ui_semantic_results
+from rag.domain_response import enrich_response_with_domain
+from rag.final_ui_filter import final_filter_ui_results
 
 
 def page_window(page, before=2, after=4):
@@ -40,7 +42,7 @@ def main():
 
     raw = ui_searcher.search(
         query=args.query,
-        targets=response.get("targets", []),
+        targets=response.get("primary_targets", response.get("targets", [])),
         page_filter=pages,
         pdf_filter=response.get("pdf_name"),
         top_k=80,

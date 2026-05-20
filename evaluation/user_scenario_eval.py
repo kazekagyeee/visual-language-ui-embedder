@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
@@ -12,39 +12,33 @@ USER_TEST_CASES = [
     {"query": "как создать заявку на контроль", "expected": ["Входной контроль", "АРМ Входной контроль", "Заявки на контроль", "Создать"], "expected_pdf": "instruction.pdf"},
     {"query": "где открыть заявки на контроль", "expected": ["Заявки на контроль"], "expected_pdf": "instruction.pdf"},
     {"query": "как открыть показатели контроля", "expected": ["Показатели контроля"], "expected_pdf": "instruction.pdf"},
+    {"query": "как создать вид контроля", "expected": ["Виды контроля", "Создать"], "expected_pdf": "instruction.pdf"},
+    {"query": "где найти группы прочности", "expected": ["Группы прочности"], "expected_pdf": "instruction.pdf"},
+    {"query": "где открыть госты для входного контроля", "expected": ["ГОСТы"], "expected_pdf": "instruction.pdf"},
+    {"query": "как сформировать документы выполнения контроля", "expected": ["Создать документы выполнения контроля"], "expected_pdf": "instruction.pdf"},
+    {"query": "как создать акт входного контроля", "expected": ["Создать акт входного контроля"], "expected_pdf": "instruction.pdf"},
+    {"query": "где найти акты входного контроля", "expected": ["Акты входного контроля"], "expected_pdf": "instruction.pdf"},
+    {"query": "как загрузить показатели из файла", "expected": ["Загрузить из файла"], "expected_pdf": "instruction.pdf"},
+
     {"query": "где найти монитор интернет поддержки", "expected": ["Монитор Интернет-поддержки"], "expected_pdf": "services_1c.pdf"},
     {"query": "как подключить интернет поддержку", "expected": ["Интернет-поддержка пользователей", "Подключить Интернет-поддержку"], "expected_pdf": "services_1c.pdf"},
     {"query": "как создать нового контрагента", "expected": ["Контрагенты", "Создать", "ИНН"], "expected_pdf": "services_1c.pdf"},
     {"query": "где находится поле инн", "expected": ["ИНН"], "expected_pdf": "services_1c.pdf"},
     {"query": "как заполнить контрагента по инн", "expected": ["Контрагенты", "Создать", "ИНН"], "expected_pdf": "services_1c.pdf"},
+    {"query": "как открыть досье контрагента", "expected": ["Досье контрагента"], "expected_pdf": "services_1c.pdf"},
     {"query": "как создать организацию", "expected": ["Организации", "Создать"], "expected_pdf": "services_1c.pdf"},
     {"query": "где открыть справочник организации", "expected": ["Организации"], "expected_pdf": "services_1c.pdf"},
-    {"query": "как создать заказ на перемещение", "expected": ["Склад и доставка", "Заказы на перемещение", "Создать заказ на перемещение"], "expected_pdf": "instruction.pdf"},
+    {"query": "как подключить 1с эдо", "expected": ["1С-ЭДО"], "expected_pdf": "services_1c.pdf"},
+    {"query": "где найти 1спарк риски", "expected": ["1СПАРК Риски"], "expected_pdf": "services_1c.pdf"},
+    {"query": "как отправить платежное поручение через директбанк", "expected": ["1С:ДиректБанк"], "expected_pdf": "services_1c.pdf"},
+
+    {"query": "что такое система компоновки данных", "expected": ["Система компоновки данных"], "expected_pdf": "reports_book.pdf"},
+    {"query": "где описаны наборы данных", "expected": ["Наборы данных"], "expected_pdf": "reports_book.pdf"},
+    {"query": "как настроить отбор в отчете", "expected": ["Отбор"], "expected_pdf": "reports_book.pdf"},
+    {"query": "где найти вычисляемые поля", "expected": ["Вычисляемые поля"], "expected_pdf": "reports_book.pdf"},
+    {"query": "как настроить группировку", "expected": ["Группировка"], "expected_pdf": "reports_book.pdf"},
+    {"query": "где находится конструктор запроса", "expected": ["Конструктор запроса"], "expected_pdf": "reports_book.pdf"},
 ]
-
-
-def _norm(x: str) -> str:
-    return (x or "").replace("ё", "е").lower().strip()
-
-
-def precision_recall_f1(expected: list[str], found: list[str]) -> tuple[float, float, float, bool]:
-    exp = {_norm(x) for x in expected}
-    got = {_norm(x) for x in found}
-
-    if not exp:
-        return 0.0, 0.0, 0.0, False
-
-    matched = 0
-    for e in exp:
-        if any(e in g or g in e for g in got):
-            matched += 1
-
-    precision = matched / max(1, len(got))
-    recall = matched / max(1, len(exp))
-    f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
-    success = recall > 0.0
-
-    return precision, recall, f1, success
 
 
 def main():
@@ -58,8 +52,7 @@ def main():
 
     results = []
     for case in USER_TEST_CASES:
-        result = evaluate_case(case, text_searcher, ui_searcher)
-        results.append(result)
+        results.append(evaluate_case(case, text_searcher, ui_searcher))
 
     def mean(key: str) -> float:
         return sum(float(r.get(key, 0.0)) for r in results) / max(1, len(results))
