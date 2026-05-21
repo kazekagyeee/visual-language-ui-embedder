@@ -141,7 +141,7 @@ class UIEmbedderConfig:
     # When False (default), g_summary is omitted and the sequence is:
     #   [box_patches(N_b) | text+EOS(T)]
     # box_start/box_end indices in HeadlessQwen2_5 are shifted automatically.
-    use_global_summary: bool = True
+    use_global_summary: bool = False
 
     # ---- Tokenizer ----
     # Maximum token length for the assembled prompt (text side only).

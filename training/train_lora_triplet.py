@@ -18,7 +18,7 @@ from PIL import Image
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +30,7 @@ from main import UIEmbedderPipeline, smart_resize
 
 
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "training" / "output"
-DEFAULT_DATASET_PATH = PROJECT_ROOT / "training" / "triplet_dataset_clean.json"
+DEFAULT_DATASET_PATH = PROJECT_ROOT / "training" / "synthetic_dataset" / "triplet_dataset_clean.json"
 CHECKPOINT_DIR = str(DEFAULT_OUTPUT_DIR / "checkpoints")
 FINAL_ADAPTER_DIR = str(DEFAULT_OUTPUT_DIR / "lora_triplet_adapter")
 TRAINING_DTYPE = torch.bfloat16
@@ -99,7 +99,7 @@ def parse_args():
     parser.add_argument(
         "--dataset-type",
         choices=("json", "screenspot"),
-        default=os.environ.get("DATASET_TYPE", "screenspot"),
+        default=os.environ.get("DATASET_TYPE", "json"),
         help="Dataset format: 'json' (legacy triplet_dataset.json) or 'screenspot' (ScreenSpot-v2).",
     )
     parser.add_argument("--dataset-path", type=Path, default=dataset_path)
@@ -143,6 +143,12 @@ def parse_args():
         type=int,
         default=int(os.environ.get("SCREENSPOT_SEED", "42")),
         help="Random seed for ScreenSpot-v2 negative sampling.",
+    )
+    parser.add_argument(
+        "--val-split",
+        type=float,
+        default=float(os.environ.get("VAL_SPLIT", "0.1")),
+        help="Fraction of data to hold out for validation (default: 0.1). Set 0 to disable.",
     )
     return parser.parse_args()
 
@@ -511,9 +517,9 @@ class TripletMetrics:
         }
 
     @staticmethod
-    def print_metrics(metrics, epoch, total_epochs, elapsed_sec):
+    def print_metrics(metrics, epoch, total_epochs, elapsed_sec, phase="TRAIN"):
         print(f"\n{'=' * 70}")
-        print(f"  EPOCH {epoch}/{total_epochs} RESULTS")
+        print(f"  EPOCH {epoch}/{total_epochs} — {phase} RESULTS")
         print(f"{'=' * 70}")
         print(f"  Avg loss:          {metrics['avg_loss']:.6f}")
         print(f"  Cos sim anchor-pos:{metrics['avg_cos_sim_positive']:.4f}")
@@ -522,8 +528,47 @@ class TripletMetrics:
         print(f"  Triplet accuracy:  {metrics['triplet_accuracy'] * 100:.1f}%")
         print(f"  Margin violations: {metrics['margin_violation_rate'] * 100:.1f}%")
         print(f"  Samples processed: {metrics['num_samples']}")
-        print(f"  Epoch time:        {elapsed_sec:.0f}s ({elapsed_sec / 60:.1f}min)")
+        print(f"  Time:              {elapsed_sec:.0f}s ({elapsed_sec / 60:.1f}min)")
         print(f"{'=' * 70}\n", flush=True)
+
+    @staticmethod
+    def print_epoch_summary(train_m, val_m, epoch, total_epochs, train_sec, val_sec):
+        """Side-by-side train vs validation comparison table."""
+        def _f(m, key, fmt):
+            if not m or key not in m:
+                return "—"
+            v = m[key]
+            if fmt == "pct":
+                return f"{v * 100:.1f}%"
+            if fmt == "f6":
+                return f"{v:.6f}"
+            if fmt == "f4":
+                return f"{v:.4f}"
+            if fmt == "sf4":
+                return f"{v:+.4f}"
+            if fmt == "d":
+                return f"{int(v)}"
+            return str(v)
+
+        rows = [
+            ("Loss",              "avg_loss",             "f6"),
+            ("Cos sim (pos)",     "avg_cos_sim_positive", "f4"),
+            ("Cos sim (neg)",     "avg_cos_sim_negative", "f4"),
+            ("Cos sim gap",       "cos_sim_gap",          "sf4"),
+            ("Triplet accuracy",  "triplet_accuracy",     "pct"),
+            ("Margin violations", "margin_violation_rate", "pct"),
+            ("Samples",           "num_samples",          "d"),
+        ]
+        total_sec = train_sec + val_sec
+        print(f"\n{'═' * 74}")
+        print(f"  EPOCH {epoch}/{total_epochs} SUMMARY  "
+              f"(train {train_sec:.0f}s + val {val_sec:.0f}s = {total_sec:.0f}s)")
+        print(f"{'═' * 74}")
+        print(f"  {'Metric':<26} {'Train':>20} {'Validation':>20}")
+        print(f"  {'─' * 66}")
+        for label, key, fmt in rows:
+            print(f"  {label:<26} {_f(train_m, key, fmt):>20} {_f(val_m, key, fmt):>20}")
+        print(f"{'═' * 74}\n", flush=True)
 
 
 def _enable_gradient_checkpointing(model):
@@ -534,6 +579,61 @@ def _enable_gradient_checkpointing(model):
         model.gradient_checkpointing_enable()
         return True
     return False
+
+
+@torch.no_grad()
+def run_validation(pipeline, val_dataloader, criterion, device, triplet_margin,
+                   max_image_size, use_tqdm=False):
+    """Run a full validation pass (no gradients) and return metrics dict."""
+    pipeline.headless_llm.eval()
+    metrics = TripletMetrics(margin=triplet_margin)
+
+    iterator = (
+        tqdm(val_dataloader, desc="Validation", unit="sample", dynamic_ncols=True)
+        if use_tqdm else val_dataloader
+    )
+
+    for batch in iterator:
+        item = batch[0]
+        try:
+            anchor_seq, visual_seqs, vs_prefix, vb_starts, vb_ends = (
+                prepare_triplet_sequences_for_llm(
+                    pipeline, item["image"], item["anchor_text"],
+                    item["pos_bbox"], item["neg_bbox"], device,
+                    max_img_size=max_image_size,
+                )
+            )
+            anchor_out = pipeline.headless_llm([anchor_seq], s_prefix=0)
+            visual_out = pipeline.headless_llm(
+                visual_seqs, s_prefix=vs_prefix,
+                s_box_starts=vb_starts, s_box_ends=vb_ends,
+            )
+            out_a = F.normalize(anchor_out[:, 0, :], dim=-1)
+            out_p = F.normalize(visual_out[:, 0, :], dim=-1)
+            out_n = F.normalize(visual_out[:, 1, :], dim=-1)
+
+            loss = criterion(out_a, out_p, out_n)
+            metrics.update(out_a, out_p, out_n, loss.item())
+
+            del anchor_out, visual_out, anchor_seq, visual_seqs
+            del out_a, out_p, out_n, loss
+        except Exception as e:
+            print(f"  [VAL] Skipped sample: {e}", flush=True)
+            continue
+
+        if str(device).startswith("cuda"):
+            torch.cuda.empty_cache()
+
+        if use_tqdm and metrics.count > 0:
+            m = metrics.compute()
+            iterator.set_postfix(
+                loss=f"{m['avg_loss']:.4f}",
+                acc=f"{m['triplet_accuracy'] * 100:.0f}%",
+                gap=f"{m['cos_sim_gap']:+.3f}",
+            )
+
+    pipeline.headless_llm.train()
+    return metrics.compute()
 
 
 def train_lora_triplet(args=None):
@@ -599,8 +699,31 @@ def train_lora_triplet(args=None):
         print(f"[*] Using JSON triplet dataset: {args.dataset_path}", flush=True)
         dataset = TripletUIDataset(data_path_or_list=args.dataset_path, data_root=args.data_root)
 
-    dataloader = DataLoader(
-        dataset,
+    # -----------------------------------------------------------------------
+    # Train / Validation split
+    # -----------------------------------------------------------------------
+    val_split = args.val_split
+    if 0.0 < val_split < 1.0:
+        total = len(dataset)
+        val_size = max(1, int(total * val_split))
+        train_size = total - val_size
+        split_gen = torch.Generator().manual_seed(args.screenspot_seed)
+        train_dataset, val_dataset = random_split(
+            dataset, [train_size, val_size], generator=split_gen,
+        )
+        print(
+            f"[*] Dataset split: {train_size} train / {val_size} validation "
+            f"(val_split={val_split:.0%}, seed={args.screenspot_seed})",
+            flush=True,
+        )
+    else:
+        train_dataset = dataset
+        val_dataset = None
+        print(f"[*] No validation split (val_split={val_split}). "
+              f"Using all {len(dataset)} samples for training.", flush=True)
+
+    train_dataloader = DataLoader(
+        train_dataset,
         batch_size=1,
         shuffle=True,
         collate_fn=lambda x: x,
@@ -608,9 +731,21 @@ def train_lora_triplet(args=None):
         pin_memory=str(device).startswith("cuda"),
         persistent_workers=args.num_workers > 0,
     )
+    val_dataloader = None
+    if val_dataset is not None and len(val_dataset) > 0:
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=lambda x: x,
+            num_workers=0,
+            pin_memory=str(device).startswith("cuda"),
+        )
 
     start_epoch = 0
-    scheduler_t_max = optimizer_steps_per_epoch(len(dataloader), gradient_accumulation_steps) * max(1, epochs)
+    best_val_loss = float("inf")
+    best_epoch = -1
+    scheduler_t_max = optimizer_steps_per_epoch(len(train_dataloader), gradient_accumulation_steps) * max(1, epochs)
     latest_ckpt = find_latest_checkpoint(str(checkpoint_dir))
     if latest_ckpt is not None:
         print(f"[*] Found checkpoint: {latest_ckpt}", flush=True)
@@ -639,7 +774,7 @@ def train_lora_triplet(args=None):
         pipeline.headless_llm.train()
         print_floating_dtype_summary("headless_llm", pipeline.headless_llm)
         optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = build_training_scheduler(optimizer, epochs, len(dataloader), gradient_accumulation_steps)
+        scheduler = build_training_scheduler(optimizer, epochs, len(train_dataloader), gradient_accumulation_steps)
     else:
         print("[*] No checkpoint/adapter found. Starting from base weights.", flush=True)
         pipeline.headless_llm = get_peft_model(pipeline.headless_llm, lora_config)
@@ -647,7 +782,7 @@ def train_lora_triplet(args=None):
         pipeline.headless_llm.print_trainable_parameters()
         print_floating_dtype_summary("headless_llm", pipeline.headless_llm)
         optimizer = AdamW(pipeline.headless_llm.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = build_training_scheduler(optimizer, epochs, len(dataloader), gradient_accumulation_steps)
+        scheduler = build_training_scheduler(optimizer, epochs, len(train_dataloader), gradient_accumulation_steps)
 
     criterion = nn.TripletMarginWithDistanceLoss(
         distance_function=lambda x, y: 1.0 - F.cosine_similarity(x, y, dim=-1),
@@ -657,8 +792,10 @@ def train_lora_triplet(args=None):
     use_tqdm = args.progress == "tqdm" or (args.progress == "auto" and sys.stderr.isatty())
     use_plain_progress = args.progress in ("auto", "plain")
     progress_mode = "tqdm" if use_tqdm else ("plain" if use_plain_progress else "off")
+    val_info = f", val={len(val_dataset)}" if val_dataset else ""
     print(
-        f"[*] Training: epochs={start_epoch + 1}..{epochs}, samples={len(dataset)}, "
+        f"[*] Training: epochs={start_epoch + 1}..{epochs}, "
+        f"train={len(train_dataset)}{val_info}, "
         f"grad_accum={gradient_accumulation_steps}, workers={args.num_workers}, progress={progress_mode}",
         flush=True,
     )
@@ -669,12 +806,12 @@ def train_lora_triplet(args=None):
         metrics = TripletMetrics(margin=triplet_margin)
         optimizer.zero_grad()
 
-        print(f"\n[*] Epoch {epoch + 1}/{epochs} — {len(dataloader)} steps", flush=True)
+        print(f"\n[*] Epoch {epoch + 1}/{epochs} — {len(train_dataloader)} train steps", flush=True)
 
         iterator = (
-            tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="sample", dynamic_ncols=True)
+            tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="sample", dynamic_ncols=True)
             if use_tqdm
-            else dataloader
+            else train_dataloader
         )
 
         for step, batch in enumerate(iterator):
@@ -685,11 +822,11 @@ def train_lora_triplet(args=None):
             if not use_tqdm and args.progress != "off":
                 elapsed_so_far = step_t0 - epoch_start_time
                 avg_step_prev  = (elapsed_so_far / step) if step > 0 else 0.0
-                eta_sec_prev   = avg_step_prev * (len(dataloader) - step)
+                eta_sec_prev   = avg_step_prev * (len(train_dataloader) - step)
                 eta_str        = f"eta={eta_sec_prev/3600:.2f}h" if step > 0 else "eta=?"
                 instr_preview  = item["anchor_text"][:45].replace("\n", " ")
                 print(
-                    f"\n  >> step {step + 1}/{len(dataloader)} "
+                    f"\n  >> step {step + 1}/{len(train_dataloader)} "
                     f"(elapsed={elapsed_so_far:.0f}s {eta_str})"
                     f"\n     text: \"{instr_preview}\"",
                     flush=True,
@@ -747,7 +884,7 @@ def train_lora_triplet(args=None):
                 print(f"  bwd={t_bwd:.2f}s", flush=True)
 
             # ── optimizer step ───────────────────────────────────────────
-            if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(dataloader):
+            if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_dataloader):
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -786,10 +923,10 @@ def train_lora_triplet(args=None):
                         }
                     )
                 elif use_plain_progress and args.log_every > 0 and (
-                    (step + 1) % args.log_every == 0 or (step + 1) == len(dataloader)
+                    (step + 1) % args.log_every == 0 or (step + 1) == len(train_dataloader)
                 ):
                     elapsed = time.time() - epoch_start_time
-                    eta_sec = avg_step_t * (len(dataloader) - step - 1)
+                    eta_sec = avg_step_t * (len(train_dataloader) - step - 1)
                     cos_p   = m["avg_cos_sim_positive"]
                     cos_n   = m["avg_cos_sim_negative"]
                     mem_str = ""
@@ -798,7 +935,7 @@ def train_lora_triplet(args=None):
                         total_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
                         mem_str  = f"  vram={used_gb:.1f}/{total_gb:.1f}GB"
                     print(
-                        f"  ┌ Ep {epoch+1}/{epochs}  step {step+1}/{len(dataloader)}{mem_str}\n"
+                        f"  ┌ Ep {epoch+1}/{epochs}  step {step+1}/{len(train_dataloader)}{mem_str}\n"
                         f"  │ loss={m['avg_loss']:.5f}  acc={m['triplet_accuracy']*100:.1f}%  "
                         f"gap={m['cos_sim_gap']:+.4f}  viol={m['margin_violation_rate']*100:.1f}%\n"
                         f"  │ cos(+)={cos_p:.4f}  cos(-)={cos_n:.4f}\n"
@@ -806,21 +943,62 @@ def train_lora_triplet(args=None):
                         flush=True,
                     )
 
+        # ── End of training epoch ────────────────────────────────────────
         epoch_elapsed = time.time() - epoch_start_time
         epoch_metrics = metrics.compute()
-        TripletMetrics.print_metrics(epoch_metrics, epoch + 1, epochs, epoch_elapsed)
+        TripletMetrics.print_metrics(epoch_metrics, epoch + 1, epochs, epoch_elapsed, phase="TRAIN")
+
+        # ── Validation pass ──────────────────────────────────────────────
+        val_metrics = None
+        val_elapsed = 0.0
+        if val_dataloader is not None:
+            print(f"[*] Running validation ({len(val_dataloader)} samples)…", flush=True)
+            val_start = time.time()
+            val_metrics = run_validation(
+                pipeline, val_dataloader, criterion, device,
+                triplet_margin, args.max_image_size, use_tqdm,
+            )
+            val_elapsed = time.time() - val_start
+            TripletMetrics.print_metrics(val_metrics, epoch + 1, epochs, val_elapsed, phase="VAL")
+
+        # ── Side-by-side summary ─────────────────────────────────────────
+        TripletMetrics.print_epoch_summary(
+            epoch_metrics, val_metrics, epoch + 1, epochs, epoch_elapsed, val_elapsed,
+        )
+
+        # ── Track best validation ────────────────────────────────────────
+        if val_metrics is not None:
+            if val_metrics["avg_loss"] < best_val_loss:
+                best_val_loss = val_metrics["avg_loss"]
+                best_epoch = epoch + 1
+                best_dir = output_dir / "best_adapter"
+                best_dir.mkdir(parents=True, exist_ok=True)
+                pipeline.headless_llm.save_pretrained(str(best_dir))
+                print(
+                    f"  [BEST] New best val loss {best_val_loss:.6f} at epoch {best_epoch}. "
+                    f"Saved → {best_dir}",
+                    flush=True,
+                )
+
+        # ── Checkpoint ───────────────────────────────────────────────────
+        combined_metrics = {"train": epoch_metrics}
+        if val_metrics is not None:
+            combined_metrics["val"] = val_metrics
         save_checkpoint(
             pipeline.headless_llm,
             optimizer,
             scheduler,
             epoch,
-            epoch_metrics,
+            combined_metrics,
             checkpoint_dir=str(checkpoint_dir),
         )
 
     os.makedirs(final_adapter_dir, exist_ok=True)
     pipeline.headless_llm.save_pretrained(str(final_adapter_dir))
-    print(f"[SUCCESS] LoRA adapter saved to: {final_adapter_dir}", flush=True)
+    print(f"\n[SUCCESS] LoRA adapter saved to: {final_adapter_dir}", flush=True)
+    if best_epoch > 0:
+        print(f"[SUCCESS] Best validation loss: {best_val_loss:.6f} (epoch {best_epoch})", flush=True)
+        print(f"[SUCCESS] Best adapter saved to: {output_dir / 'best_adapter'}", flush=True)
 
 
 if __name__ == "__main__":
