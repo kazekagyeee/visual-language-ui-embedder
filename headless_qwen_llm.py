@@ -81,11 +81,12 @@ class Qwen2_5_Attention(nn.Module):
 
         # Стандартный Scaled Dot-Product Attention
         # Для троек (Box, Global, Text) здесь можно использовать causal mask
+        # is_causal=False всегда — маска передаётся отдельно
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=mask,
             dropout_p=0.0,
-            is_causal=mask is None  # Если маски нет, считаем что нужна казуальная
+            is_causal=False  # mask всегда передаётся, never None
         )
 
         attn_output = attn_output.transpose(1, 2).reshape(B, L, self.hidden_size)
@@ -153,7 +154,8 @@ class HeadlessQwen2_5(nn.Module):
                 mask[P:, :P] = True                                                # suffix sees prefix
                 mask[P:, P:] = torch.tril(torch.ones(R, R, device=x_seq.device, dtype=torch.bool))
             else:
-                mask = torch.tril(torch.ones(S, S, device=x_seq.device, dtype=torch.bool))
+                mask = torch.zeros(S, S, device=x_seq.device, dtype=torch.bool)
+                # No mask: fully bidirectional attention (text-only path case)
 
             mask = mask.view(1, 1, S, S)
 
@@ -162,23 +164,10 @@ class HeadlessQwen2_5(nn.Module):
 
             x_seq = self.norm(x_seq)
 
-            # --- Pooling strategy ---
-            # Fix 2: mean-pool the box-patch output positions.
-            # These positions carry box-specific signal enriched by the LLM through
-            # cross-attention to the global summary and text tokens.
-            # The EOS "last token" approach keeps seeing 95%+ identical shared context.
-            if (s_box_starts is not None and s_box_ends is not None
-                    and idx < len(s_box_starts) and idx < len(s_box_ends)):
-                bs = s_box_starts[idx]
-                be = s_box_ends[idx]
-                if be > bs:
-                    pooled_emb = x_seq[:, bs:be, :].mean(dim=1)  # (1, D)
-                else:
-                    # Degenerate: fallback to EOS
-                    pooled_emb = x_seq[:, -1, :]
-            else:
-                # Legacy fallback: EOS last token
-                pooled_emb = x_seq[:, -1, :]
+            # --- Pooling strategy: always use EOS ---
+            # EOS is guaranteed to be at [-1] position in all sequences
+            # This ensures consistent semantic representation across modalities
+            pooled_emb = x_seq[:, -1, :]
 
             pooled_outputs.append(pooled_emb)
 

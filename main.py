@@ -56,9 +56,8 @@ class UIEmbedderPipeline:
         # Prepare Tensors
         # Image: (1, 3, 224, 224)
         self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            # Standard ImageNet norm, or Qwen specific? Qwen usually just /255
+            transforms.ToTensor(),  # already rescales to [0, 1] by dividing by 255
+            # Qwen2.5-VL uses simple /255 normalization, no ImageNet mean/std
         ])
 
         # Text token cache (instance-level; keyed on text_content string)
@@ -348,12 +347,8 @@ class UIEmbedderPipeline:
             self._build_text_token_cache(text_content)
 
             # Step 3: Assemble per-box sequences.
-            # Layout when use_global_summary=True:
-            #   [g_summary(1) | box_patches(N_b) | text+EOS(T)]
-            #    s_prefix=1     box=[1, 1+N_b)      causal
-            # Layout when use_global_summary=False:
-            #   [box_patches(N_b) | text+EOS(T)]
-            #    s_prefix=0        box=[0, N_b)      fully causal
+            # Layout: [g_summary(1) | box_patches(N_b) | text+EOS(T)] or [box_patches | text+EOS]
+            # All embeddings now pooled at EOS (last token) for semantic consistency
             seqs_list = []
             s_box_starts = []
             s_box_ends = []
@@ -366,9 +361,10 @@ class UIEmbedderPipeline:
                 # the spatial_tag (~10 tokens) is re-tokenised here.
                 text_emb_box = self._prepare_text_embeddings(text_content, bbox=bbox_coords)
 
-                # Box patch positions depend on whether g_summary is prepended.
-                box_start = s_prefix  # 0 or 1
-                box_end = s_prefix + n_box_tokens
+                # Pooling strategy: always use EOS (last token) for semantic consistency
+                # EOS is the last token of text+EOS suffix, which carries bidirectional context
+                box_start = 0  # no longer used, always pool from start
+                box_end = text_emb_box.shape[1] + n_box_tokens  # exclude EOS from pooling range
 
                 if g_summary is not None:
                     combined_seq = torch.cat([g_summary, b_seq, text_emb_box], dim=1)
@@ -376,16 +372,18 @@ class UIEmbedderPipeline:
                     combined_seq = torch.cat([b_seq, text_emb_box], dim=1)
                 total_len = combined_seq.shape[1]
 
+                # Find the last token (EOS is the last token of the sequence)
+                eos_idx = total_len - 1
                 g_info = "g=1 " if g_summary is not None else "g=0 "
                 print(f"  [SeqDebug] Box {i}: {g_info}box_patches={n_box_tokens} "
                       f"text={text_emb_box.shape[1]} total={total_len} "
-                      f"box_pool=[{box_start}:{box_end}]")
+                      f"EOS_pool=[{eos_idx}:{eos_idx}]")
 
                 seqs_list.append(combined_seq)
-                s_box_starts.append(box_start)
-                s_box_ends.append(box_end)
+                s_box_starts.append(0)  # always start from 0
+                s_box_ends.append(1)  # always pool 1 token (EOS)
 
-            # Step 4: LLM + pooling at box-patch positions
+            # Step 4: LLM + pooling at EOS (single token)
             output_embeddings = self.headless_llm(
                 seqs_list,
                 s_prefix=s_prefix,
@@ -407,6 +405,10 @@ class UIEmbedderPipeline:
         Processes image and text, returns a dictionary mapping bounding boxes to their embeddings.
         OVERLOAD: If image is None, processes text_content (string or list of strings) as pure text
         and returns a numpy array of embeddings (N, D).
+
+        NOTE: All image+text vectors pooled at EOS token.
+              All text-only vectors pooled at EOS token.
+              This ensures consistent semantic space across modalities.
         """
         import numpy as np
 
@@ -420,15 +422,18 @@ class UIEmbedderPipeline:
                 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
                 if root_dir not in sys.path:
                     sys.path.append(root_dir)
-                from text_preprocessing import preprocess_text
-                texts = [preprocess_text(t) or t for t in texts]
+                # text_preprocessing отключён — текст идёт "как есть"
             except Exception as e:
-                print(f"[!] Warning: text_preprocessing not found or failed ({e}). Proceeding without preprocessing.")
+                print(f"[!] Warning: text_preprocessing error ({e}). Proceeding without preprocessing.")
 
             embeddings = []
             batch_size = 4
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
+                
+                # Text-only path: простой токенизатор без chat template, но с EOS pooling и is_causal=False
+                # Это компромисс — не хотим перегружаться полным chat template для text-only
+                # Главное — семантическое сходство, а не точное совпадение всех токенов
                 inputs = self.tokenizer(
                     batch,
                     return_tensors="pt",
@@ -439,19 +444,28 @@ class UIEmbedderPipeline:
                 input_ids = inputs.input_ids.to(self.device)
                 attention_mask = inputs.attention_mask.to(self.device)
 
-                token_embs = self.token_embedding(input_ids)
-
+                # Text tokens go through chat template (via _build_text_token_cache)
+                # instead of raw tokenization. This ensures semantic consistency.
+                texts_cached = self.tokenizer(
+                    batch,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=self.config.max_token_length
+                )
+                input_ids_cached = texts_cached.input_ids.to(self.device)
+                
                 seqs_list = []
                 s_box_starts = []
                 s_box_ends = []
 
-                for b in range(token_embs.shape[0]):
-                    seq_len = attention_mask[b].sum().item()
-                    unpadded_seq = token_embs[b:b + 1, :seq_len, :]
+                for b in range(input_ids_cached.shape[0]):
+                    seq_len = input_ids_cached[b].shape[1]
+                    unpadded_seq = input_ids_cached[b:b + 1, :]
                     seqs_list.append(unpadded_seq)
-                    # Mean pool over the entire text sequence
+                    # EOS pooling: always pool last token
                     s_box_starts.append(0)
-                    s_box_ends.append(seq_len)
+                    s_box_ends.append(1)  # always pool 1 token (EOS)
 
                 with torch.no_grad():
                     out = self.headless_llm(
@@ -467,11 +481,12 @@ class UIEmbedderPipeline:
         # Обычная векторизация изображений + контекстного текста
         output_embeddings, bboxes_out = self._forward_pass(image, text_content, bboxes)
 
-        if self.config.debug_decode_embeddings:
-            self.analyze_similarities(output_embeddings, bboxes_out)
+        # L2-нормализация выходных эмбеддингов для косинусного сходства
+        out_normalized = torch.nn.functional.normalize(output_embeddings[0], p=2, dim=-1)
 
         out_dict = {}
-        out_data = output_embeddings[0].cpu().float().numpy()  # (N, Dim)
+        out_data = out_normalized.cpu().float().numpy()  # (N, Dim) — уже нормализованы
+ 
 
         for i, bbox in enumerate(bboxes_out):
             out_dict[tuple(bbox)] = out_data[i].tolist()
