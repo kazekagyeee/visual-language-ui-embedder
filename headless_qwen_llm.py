@@ -79,14 +79,12 @@ class Qwen2_5_Attention(nn.Module):
             k = k.repeat_interleave(self.num_key_value_groups, dim=1)
             v = v.repeat_interleave(self.num_key_value_groups, dim=1)
 
-        # Стандартный Scaled Dot-Product Attention
-        # Для троек (Box, Global, Text) здесь можно использовать causal mask
-        # is_causal=False всегда — маска передаётся отдельно
+        # Use native causal attention when no custom prefix mask is needed.
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
             attn_mask=mask,
             dropout_p=0.0,
-            is_causal=False  # mask всегда передаётся, never None
+            is_causal=mask is None
         )
 
         attn_output = attn_output.transpose(1, 2).reshape(B, L, self.hidden_size)
@@ -126,10 +124,8 @@ class HeadlessQwen2_5(nn.Module):
                       Expected layout: [g_summary(1) | box_patches(N_b) | text+EOS(T)]
         s_prefix:     Number of leading tokens that form the bidirectional prefix
                       (g_summary tokens). Pass 0 for pure causal (legacy).
-        s_box_starts: list of ints — start position of box patches in each sequence.
-        s_box_ends:   list of ints — end position (exclusive) of box patches.
-                      When provided, embedding = mean(LLM_output[s_box_start:s_box_end]).
-                      Falls back to last-token (EOS) when not provided.
+        s_box_starts/s_box_ends are accepted for compatibility with older
+                      callers, but pooling is always done on the last token.
         Returns:
             Tensor of shape (1, N_boxes, D) — one embedding per bbox.
         """
@@ -146,6 +142,7 @@ class HeadlessQwen2_5(nn.Module):
             # --- Hybrid attention mask ---
             # [g_summary prefix (P)] → bidirectional
             # [box + text (R)]       → causal, full access to prefix
+            mask = None
             if s_prefix > 0 and s_prefix < S:
                 P = s_prefix
                 R = S - P
@@ -153,11 +150,9 @@ class HeadlessQwen2_5(nn.Module):
                 mask[:P, :P] = True                                                # prefix: bidirectional
                 mask[P:, :P] = True                                                # suffix sees prefix
                 mask[P:, P:] = torch.tril(torch.ones(R, R, device=x_seq.device, dtype=torch.bool))
-            else:
-                mask = torch.zeros(S, S, device=x_seq.device, dtype=torch.bool)
-                # No mask: fully bidirectional attention (text-only path case)
-
-            mask = mask.view(1, 1, S, S)
+                mask = mask.view(1, 1, S, S)
+            elif s_prefix >= S:
+                mask = torch.ones(S, S, device=x_seq.device, dtype=torch.bool).view(1, 1, S, S)
 
             for layer in self.layers:
                 x_seq = layer(x_seq, mask=mask, rope_cos_sin=(cos, sin))

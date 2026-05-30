@@ -162,12 +162,13 @@ class Qwen2VLSpatialMerge(nn.Module):
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
+        hidden_dim = in_dim * 4
         
-        # MLP as in Qwen2.5-VL: 5120 (4*1280) → 3584 → 3584
+        # MLP as in Qwen VL: 5120 (4*1280) -> 5120 -> llm_dim
         self.mlp = nn.Sequential(
-            nn.Linear(in_dim * 4, out_dim, bias=True),
+            nn.Linear(hidden_dim, hidden_dim, bias=True),
             nn.GELU(),
-            nn.Linear(out_dim, out_dim, bias=True)
+            nn.Linear(hidden_dim, out_dim, bias=True)
         )
         
     def forward(self, feature_grid):

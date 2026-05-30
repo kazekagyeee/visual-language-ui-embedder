@@ -120,23 +120,24 @@ class UIEmbedderPipeline:
         except Exception as e:
             print(f"[!] BFloat16 not supported? {e}. Using float32.")
 
-        # Load LoRA adapter if it exists
+        # Resolve LoRA adapter path if it exists. Prefer the final training
+        # artifact, but fall back to best_adapter because older runs saved that.
         import os as _os
-        _adapter_dir = _os.path.join(
+        _output_dir = _os.path.join(
             _os.path.dirname(_os.path.abspath(__file__)),
-            "training", "output", "lora_triplet_adapter"
+            "training", "output"
         )
-        _adapter_cfg = _os.path.join(_adapter_dir, "adapter_config.json")
-        if _os.path.exists(_adapter_cfg):
-            try:
-                self.headless_llm = PeftModel.from_pretrained(
-                    self.headless_llm, _adapter_dir
-                )
-                print(f"[*] Loaded LoRA adapter from: {_adapter_dir}")
-            except Exception as e:
-                print(f"[!] Failed to load LoRA adapter: {e}. Continuing without adapter.")
-        else:
-            print(f"[!] No LoRA adapter found at: {_adapter_dir}. Continuing without adapter.")
+        _adapter_candidates = [
+            _os.path.join(_output_dir, "lora_triplet_adapter"),
+            _os.path.join(_output_dir, "best_adapter"),
+        ]
+        _adapter_dir = next(
+            (
+                path for path in _adapter_candidates
+                if _os.path.exists(_os.path.join(path, "adapter_config.json"))
+            ),
+            None,
+        )
 
         try:
             load_all_weights(
@@ -148,6 +149,19 @@ class UIEmbedderPipeline:
             )
         except Exception as e:
             print(f"[!] Critical Error loading weights: {e}")
+            raise
+
+        if _adapter_dir is not None:
+            try:
+                self.headless_llm = PeftModel.from_pretrained(
+                    self.headless_llm, _adapter_dir
+                )
+                print(f"[*] Loaded LoRA adapter from: {_adapter_dir}")
+            except Exception as e:
+                print(f"[!] Failed to load LoRA adapter: {e}. Continuing without adapter.")
+        else:
+            searched = ", ".join(_adapter_candidates)
+            print(f"[!] No LoRA adapter found in: {searched}. Continuing without adapter.")
 
         t_load = time.time()
         print(f"  [Time] Weight Loading: {t_load - t_init:.2f}s")
@@ -240,7 +254,7 @@ class UIEmbedderPipeline:
         total_base = prefix_ids.shape[1] + base_ids_full.shape[1] + suffix_ids.shape[1]
         print(
             f"  [TextCache] Built: prefix={prefix_ids.shape[1]} base={base_ids_full.shape[1]} "
-            f"suffix={suffix_ids.shape[1]} → total_base={total_base} tokens  "
+            f"suffix={suffix_ids.shape[1]} -> total_base={total_base} tokens  "
             f"(max_token_length={self.config.max_token_length})"
         )
 
@@ -336,11 +350,11 @@ class UIEmbedderPipeline:
             if self.config.use_global_summary:
                 g_summary = g_seq.mean(dim=1, keepdim=True)  # (1, 1, D)
                 s_prefix = 1  # bidirectional prefix length for HeadlessQwen2_5
-                print(f"  [GlobalSummary] ON  — prepending 1 summary token")
+                print(f"  [GlobalSummary] ON  - prepending 1 summary token")
             else:
                 g_summary = None
                 s_prefix = 0  # fully causal
-                print(f"  [GlobalSummary] OFF — no summary token")
+                print(f"  [GlobalSummary] OFF - no summary token")
 
             # Step 2: Pre-build text token cache ONCE for all boxes.
             print(f"\n[*] Building text token cache for {len(b_seqs)} boxes...")
@@ -350,8 +364,6 @@ class UIEmbedderPipeline:
             # Layout: [g_summary(1) | box_patches(N_b) | text+EOS(T)] or [box_patches | text+EOS]
             # All embeddings now pooled at EOS (last token) for semantic consistency
             seqs_list = []
-            s_box_starts = []
-            s_box_ends = []
 
             for i, b_seq in enumerate(b_seqs):
                 bbox_coords = bboxes[i]
@@ -360,11 +372,6 @@ class UIEmbedderPipeline:
                 # Per-box text embeddings: cache hit for shared parts, only
                 # the spatial_tag (~10 tokens) is re-tokenised here.
                 text_emb_box = self._prepare_text_embeddings(text_content, bbox=bbox_coords)
-
-                # Pooling strategy: always use EOS (last token) for semantic consistency
-                # EOS is the last token of text+EOS suffix, which carries bidirectional context
-                box_start = 0  # no longer used, always pool from start
-                box_end = text_emb_box.shape[1] + n_box_tokens  # exclude EOS from pooling range
 
                 if g_summary is not None:
                     combined_seq = torch.cat([g_summary, b_seq, text_emb_box], dim=1)
@@ -380,15 +387,11 @@ class UIEmbedderPipeline:
                       f"EOS_pool=[{eos_idx}:{eos_idx}]")
 
                 seqs_list.append(combined_seq)
-                s_box_starts.append(0)  # always start from 0
-                s_box_ends.append(1)  # always pool 1 token (EOS)
 
             # Step 4: LLM + pooling at EOS (single token)
             output_embeddings = self.headless_llm(
                 seqs_list,
                 s_prefix=s_prefix,
-                s_box_starts=s_box_starts,
-                s_box_ends=s_box_ends,
             )
 
         print(f"  [+] Output Shape: {output_embeddings.shape}")
@@ -416,76 +419,38 @@ class UIEmbedderPipeline:
             # Векторизация чистого текста (перегрузка)
             texts = text_content if isinstance(text_content, list) else [text_content]
 
-            try:
-                import sys
-                import os
-                root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-                if root_dir not in sys.path:
-                    sys.path.append(root_dir)
-                # text_preprocessing отключён — текст идёт "как есть"
-            except Exception as e:
-                print(f"[!] Warning: text_preprocessing error ({e}). Proceeding without preprocessing.")
-
             embeddings = []
             batch_size = 4
             for i in range(0, len(texts), batch_size):
                 batch = texts[i:i + batch_size]
                 
-                # Text-only path: простой токенизатор без chat template, но с EOS pooling и is_causal=False
-                # Это компромисс — не хотим перегружаться полным chat template для text-only
-                # Главное — семантическое сходство, а не точное совпадение всех токенов
-                inputs = self.tokenizer(
-                    batch,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.config.max_token_length
-                )
-                input_ids = inputs.input_ids.to(self.device)
-                attention_mask = inputs.attention_mask.to(self.device)
-
-                # Text tokens go through chat template (via _build_text_token_cache)
-                # instead of raw tokenization. This ensures semantic consistency.
-                texts_cached = self.tokenizer(
-                    batch,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.config.max_token_length
-                )
-                input_ids_cached = texts_cached.input_ids.to(self.device)
-                
+                # Text-only uses the same prompt construction as image+text,
+                # without a bbox tag. The last prompt token is the embedding anchor.
                 seqs_list = []
-                s_box_starts = []
-                s_box_ends = []
-
-                for b in range(input_ids_cached.shape[0]):
-                    seq_len = input_ids_cached[b].shape[1]
-                    unpadded_seq = input_ids_cached[b:b + 1, :]
-                    seqs_list.append(unpadded_seq)
-                    # EOS pooling: always pool last token
-                    s_box_starts.append(0)
-                    s_box_ends.append(1)  # always pool 1 token (EOS)
+                for item in batch:
+                    seqs_list.append(self._prepare_text_embeddings(str(item or ""), bbox=None))
 
                 with torch.no_grad():
                     out = self.headless_llm(
                         seqs_list,
                         s_prefix=0,
-                        s_box_starts=s_box_starts,
-                        s_box_ends=s_box_ends
                     )
-                embeddings.append(out[0].cpu().float().numpy())
+                    out = torch.nn.functional.normalize(out[0], p=2, dim=-1)
+                embeddings.append(out.cpu().float().numpy())
 
             return np.vstack(embeddings)
 
         # Обычная векторизация изображений + контекстного текста
-        output_embeddings, bboxes_out = self._forward_pass(image, text_content, bboxes)
+        output_embeddings, bboxes_out = self._forward_pass(image, str(text_content or ""), bboxes)
+
+        if self.config.debug_decode_embeddings:
+            self.analyze_similarities(output_embeddings, bboxes_out)
 
         # L2-нормализация выходных эмбеддингов для косинусного сходства
         out_normalized = torch.nn.functional.normalize(output_embeddings[0], p=2, dim=-1)
 
         out_dict = {}
-        out_data = out_normalized.cpu().float().numpy()  # (N, Dim) — уже нормализованы
+        out_data = out_normalized.cpu().float().numpy()  # (N, Dim)
  
 
         for i, bbox in enumerate(bboxes_out):

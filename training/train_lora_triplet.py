@@ -244,7 +244,7 @@ class ScreenSpotV2Dataset(Dataset):
             self.data_dir = local_data
             print(f"  [ScreenSpot] Using local image copy: {self.data_dir}", flush=True)
 
-        print(f"  [ScreenSpot] Loading samples.json from {snap} …", flush=True)
+        print(f"  [ScreenSpot] Loading samples.json from {snap} ...", flush=True)
         with open(snap / "samples.json", "r", encoding="utf-8") as f:
             raw = json.load(f)
         all_samples = raw.get("samples", [])
@@ -669,7 +669,7 @@ def train_lora_triplet(args=None):
         metrics = TripletMetrics(margin=triplet_margin)
         optimizer.zero_grad()
 
-        print(f"\n[*] Epoch {epoch + 1}/{epochs} — {len(dataloader)} steps", flush=True)
+        print(f"\n[*] Epoch {epoch + 1}/{epochs} - {len(dataloader)} steps", flush=True)
 
         iterator = (
             tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}", unit="sample", dynamic_ncols=True)
