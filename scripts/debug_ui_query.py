@@ -27,13 +27,19 @@ def main():
 
     response = AnswerEngine().build_response(args.query, text_results)
 
+    # ВАЖНО: доменное расширение ответа должно применяться ДО печати
+    # и ДО поиска UI-элементов.
+    response = enrich_response_with_domain(args.query, response)
+
     print("\n=== RESPONSE ===")
     print("source:", response["source"])
     print("pdf:", response["pdf_name"])
     print("page:", response["page"])
-    print("targets:", response["targets"])
+    print("targets:", response.get("targets", []))
+    print("primary_targets:", response.get("primary_targets", []))
+    print("context_targets:", response.get("context_targets", []))
     print("steps:")
-    for s in response["steps"]:
+    for s in response.get("steps", []):
         print(" -", s)
 
     pages = page_window(response["page"])
@@ -54,6 +60,11 @@ def main():
         results=raw,
         limit=8,
     )
+
+    try:
+        final = final_filter_ui_results(final, response, limit=8)
+    except TypeError:
+        final = final_filter_ui_results(final, limit=8)
 
     print("\n=== RAW UI TOP 20 ===")
     for i, r in enumerate(raw[:20], start=1):

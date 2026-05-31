@@ -20,6 +20,15 @@ def _unique(values):
 def infer_primary_targets(query: str, targets: list[str]) -> list[str]:
     q = _q(query)
 
+    if "заяв" in q and "контрол" in q and ("создат" in q or "создать" in q):
+        return ["Входной контроль", "АРМ Входной контроль", "Заявки на контроль", "Создать"]
+
+    if "маршрут" in q and "карт" in q:
+        return ["Маршрутная карта", "Печать"]
+
+    if "ресурс" in q and "спецификац" in q:
+        return ["Ресурсные спецификации", "Создать"]
+
     if "показател" in q and "контрол" in q:
         return ["Показатели контроля"]
 
@@ -60,10 +69,48 @@ def enrich_response_with_domain(query: str, response: dict) -> dict:
 
     domain_targets = query_to_targets(query)
     old_targets = response.get("targets") or []
-
     targets = _unique(old_targets + domain_targets)
 
-    if "показател" in q and "контрол" in q:
+    if "маршрут" in q and "карт" in q:
+        response["pdf_name"] = "instruction.pdf"
+        response["page"] = 51
+        response["source"] = "instruction.pdf, страница 51"
+        targets = _unique(["Маршрутная карта", "Маршрутная карта (СБМ)", "Печать"] + targets)
+        response["steps"] = [
+            "Откройте документ или этап, для которого требуется маршрутная карта.",
+            "Нажмите «Печать».",
+            "Выберите пункт «Маршрутная карта».",
+        ]
+
+    elif "ресурс" in q and "спецификац" in q:
+        response["pdf_name"] = "instruction.pdf"
+        response["page"] = 48
+        response["source"] = "instruction.pdf, страница 48"
+        targets = _unique([
+            "Ресурсные спецификации",
+            "Ресурсная спецификация",
+            "Создать",
+            "Создать группу",
+        ] + targets)
+        response["steps"] = [
+            "Откройте раздел «Производство».",
+            "Перейдите в «Ресурсные спецификации».",
+            "Нажмите «Создать».",
+        ]
+
+    elif "заяв" in q and "контрол" in q and ("создат" in q or "создать" in q):
+        response["pdf_name"] = "instruction.pdf"
+        response["page"] = 14
+        response["source"] = "instruction.pdf, страница 14"
+        targets = _unique(["Входной контроль", "АРМ Входной контроль", "Заявки на контроль", "Создать"] + targets)
+        response["steps"] = [
+            "Откройте вкладку «Входной контроль».",
+            "Перейдите в раздел «АРМ Входной контроль».",
+            "Откройте пункт «Заявки на контроль».",
+            "Нажмите «Создать».",
+        ]
+
+    elif "показател" in q and "контрол" in q:
         response["pdf_name"] = "instruction.pdf"
         response["page"] = 3
         response["source"] = "instruction.pdf, страница 3"
@@ -91,6 +138,12 @@ def enrich_response_with_domain(query: str, response: dict) -> dict:
         response["page"] = 22
         response["source"] = "services_1c.pdf, страница 22"
         targets = _unique(["Контрагенты", "Создать", "ИНН", "Начните отсюда", "Заполнить"] + targets)
+        response["steps"] = [
+            "Откройте справочник «Контрагенты».",
+            "Нажмите «Создать».",
+            "Введите ИНН в поле «ИНН» или «Начните отсюда».",
+            "Нажмите кнопку «Заполнить».",
+        ]
 
     elif "монитор" in q and "интернет" in q:
         response["pdf_name"] = "services_1c.pdf"

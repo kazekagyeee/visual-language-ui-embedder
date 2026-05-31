@@ -1,10 +1,10 @@
 {
   "summary": {
-    "cases": 30,
-    "success_rate": 0.7,
-    "mean_precision": 0.4761,
-    "mean_recall": 0.725,
-    "mean_f1": 0.5446
+    "cases": 42,
+    "success_rate": 0.7143,
+    "mean_precision": 0.3885,
+    "mean_recall": 0.7262,
+    "mean_f1": 0.4761
   },
   "details": [
     {
@@ -15,7 +15,8 @@
       "pdf_ok": true,
       "source_page": 14,
       "targets": [
-        "Входной контроль"
+        "Входной контроль",
+        "Найти"
       ],
       "expected": [
         "Входной контроль"
@@ -72,8 +73,37 @@
       "source_page": 17,
       "targets": [
         "Создать документы выполнения контроля",
-        "Входной контроль",
+        "Входной контроль"
+      ],
+      "expected": [
         "АРМ Входной контроль"
+      ],
+      "found": [
+        "Входной контроль",
+        "Создать документы выполнения контроля"
+      ],
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.6667,
+      "mrr": 1.0,
+      "hit_at_1": true,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "как открыть арм входной контроль",
+      "source": "instruction.pdf, страница 14",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 14,
+      "targets": [
+        "входной контроль",
+        "АРМ Входной контроль",
+        "Заявки на контроль",
+        "Создать",
+        "Входной контроль"
       ],
       "expected": [
         "АРМ Входной контроль"
@@ -81,7 +111,7 @@
       "found": [
         "Входной контроль",
         "АРМ Входной контроль",
-        "Создать документы выполнения контроля"
+        "Заявки на контроль"
       ],
       "precision": 0.6667,
       "recall": 1.0,
@@ -93,40 +123,38 @@
       "success": true
     },
     {
-      "query": "как создать заявку на контроль",
-      "source": "instruction.pdf, страница 14",
+      "query": "где найти заявки на контроль",
+      "source": "instruction.pdf, страница 100",
       "source_pdf": "instruction.pdf",
       "expected_pdf": "instruction.pdf",
       "pdf_ok": true,
-      "source_page": 14,
+      "source_page": 100,
       "targets": [
         "входной контроль",
         "АРМ Входной контроль",
         "Заявки на контроль",
         "Создать",
-        "Заявка на контроль",
-        "Входной контроль"
+        "Входной контроль",
+        "Найти"
       ],
       "expected": [
-        "Входной контроль",
-        "АРМ Входной контроль",
-        "Заявки на контроль",
-        "Создать"
+        "Заявки на контроль"
       ],
       "found": [
         "Входной контроль",
         "АРМ Входной контроль",
         "Заявки на контроль",
-        "Заявки на контроль"
+        "Создать вхадного кантгопя",
+        "Саатветствует нармативу"
       ],
-      "precision": 1.0,
-      "recall": 0.75,
-      "f1": 0.8571,
-      "mrr": 1.0,
-      "hit_at_1": true,
+      "precision": 0.2,
+      "recall": 1.0,
+      "f1": 0.3333,
+      "mrr": 0.3333,
+      "hit_at_1": false,
       "hit_at_3": true,
       "hit_at_5": true,
-      "success": false
+      "success": true
     },
     {
       "query": "где открыть заявки на контроль",
@@ -156,6 +184,41 @@
       "f1": 0.4,
       "mrr": 0.3333,
       "hit_at_1": false,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "как создать заявку на контроль",
+      "source": "instruction.pdf, страница 14",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 14,
+      "targets": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Заявки на контроль",
+        "Создать",
+        "входной контроль"
+      ],
+      "expected": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Заявки на контроль",
+        "Создать"
+      ],
+      "found": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Заявки на контроль",
+        "Создать"
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "mrr": 1.0,
+      "hit_at_1": true,
       "hit_at_3": true,
       "hit_at_5": true,
       "success": true
@@ -192,6 +255,71 @@
       "success": true
     },
     {
+      "query": "где найти показатели контроля",
+      "source": "instruction.pdf, страница 3",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 3,
+      "targets": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Показатели контроля",
+        "Создать",
+        "Найти"
+      ],
+      "expected": [
+        "Показатели контроля"
+      ],
+      "found": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Создать Поиск (Сt+F) Еще",
+        "Показатели контроля",
+        "Внеоборотные Внеоборотные активы активы"
+      ],
+      "precision": 0.2,
+      "recall": 1.0,
+      "f1": 0.3333,
+      "mrr": 0.25,
+      "hit_at_1": false,
+      "hit_at_3": false,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "как создать показатель контроля",
+      "source": "instruction.pdf, страница 3",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 3,
+      "targets": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Показатели контроля",
+        "Создать"
+      ],
+      "expected": [
+        "Показатели контроля",
+        "Создать"
+      ],
+      "found": [
+        "Входной контроль",
+        "АРМ Входной контроль",
+        "Создать Поиск (Сt+F) Еще",
+        "Показатели контроля"
+      ],
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.6667,
+      "mrr": 0.3333,
+      "hit_at_1": false,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
       "query": "как создать вид контроля",
       "source": "instruction.pdf, страница 87",
       "source_pdf": "instruction.pdf",
@@ -200,24 +328,53 @@
       "source_page": 87,
       "targets": [
         "Создать",
-        "Виды контроля"
+        "Входной контроль"
       ],
       "expected": [
         "Виды контроля",
         "Создать"
       ],
       "found": [
-        "Создать",
-        "Виды контроля"
+        "Входной контроль",
+        "Создать"
       ],
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1": 1.0,
-      "mrr": 1.0,
-      "hit_at_1": true,
+      "precision": 0.5,
+      "recall": 0.5,
+      "f1": 0.5,
+      "mrr": 0.5,
+      "hit_at_1": false,
       "hit_at_3": true,
       "hit_at_5": true,
-      "success": true
+      "success": false
+    },
+    {
+      "query": "где найти виды контроля",
+      "source": "instruction.pdf, страница 1",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 1,
+      "targets": [
+        "Создать",
+        "Входной контроль",
+        "Найти"
+      ],
+      "expected": [
+        "Виды контроля"
+      ],
+      "found": [
+        "Входной контроль",
+        "Создать",
+        "Внеоборотные активы"
+      ],
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
+      "hit_at_1": false,
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
     },
     {
       "query": "где найти группы прочности",
@@ -228,23 +385,24 @@
       "source_page": 5,
       "targets": [
         "Создать",
-        "Группы прочности"
+        "Входной контроль",
+        "Найти"
       ],
       "expected": [
         "Группы прочности"
       ],
       "found": [
-        "Создать",
-        "Группы прочности"
+        "Входной контроль",
+        "Создать"
       ],
-      "precision": 0.5,
-      "recall": 1.0,
-      "f1": 0.6667,
-      "mrr": 0.5,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
       "hit_at_1": false,
-      "hit_at_3": true,
-      "hit_at_5": true,
-      "success": true
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
     },
     {
       "query": "где открыть госты для входного контроля",
@@ -254,24 +412,22 @@
       "pdf_ok": true,
       "source_page": 93,
       "targets": [
-        "Входной контроль",
-        "ГОСТы"
+        "Входной контроль"
       ],
       "expected": [
         "ГОСТы"
       ],
       "found": [
-        "Входной контроль",
-        "ГОСТы"
+        "Входной контроль"
       ],
-      "precision": 0.5,
-      "recall": 1.0,
-      "f1": 0.6667,
-      "mrr": 0.5,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
       "hit_at_1": false,
-      "hit_at_3": true,
-      "hit_at_5": true,
-      "success": true
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
     },
     {
       "query": "как сформировать документы выполнения контроля",
@@ -282,20 +438,20 @@
       "source_page": 17,
       "targets": [
         "Создать документы выполнения контроля",
-        "Сформировать"
+        "Входной контроль"
       ],
       "expected": [
         "Создать документы выполнения контроля"
       ],
       "found": [
-        "Создать документы выполнения контроля",
-        "Создать Создать документы выполнения контроля Понск Ctl-F Еще"
+        "Входной контроль",
+        "Создать документы выполнения контроля"
       ],
-      "precision": 1.0,
+      "precision": 0.5,
       "recall": 1.0,
-      "f1": 1.0,
-      "mrr": 1.0,
-      "hit_at_1": true,
+      "f1": 0.6667,
+      "mrr": 0.5,
+      "hit_at_1": false,
       "hit_at_3": true,
       "hit_at_5": true,
       "success": true
@@ -309,9 +465,8 @@
       "source_page": 24,
       "targets": [
         "Создать акт входного контроля",
-        "Создать",
         "Входной контроль",
-        "Акты входного контроля"
+        "Создать"
       ],
       "expected": [
         "Создать акт входного контроля"
@@ -319,12 +474,11 @@
       "found": [
         "Входной контроль",
         "Создать акт Еходного контроля",
-        "Создать акт входного контроля",
-        "Акты входного контроля"
+        "Создать акт входного контроля"
       ],
-      "precision": 0.5,
+      "precision": 0.6667,
       "recall": 1.0,
-      "f1": 0.6667,
+      "f1": 0.8,
       "mrr": 0.5,
       "hit_at_1": false,
       "hit_at_3": true,
@@ -341,7 +495,7 @@
       "targets": [
         "Создать акт входного контроля",
         "Входной контроль",
-        "Акты входного контроля"
+        "Найти"
       ],
       "expected": [
         "Акты входного контроля"
@@ -349,7 +503,7 @@
       "found": [
         "Входной контроль",
         "Создать акт входного контроля",
-        "Акты входного контроля"
+        "Акт входного контроля (создание)"
       ],
       "precision": 0.6667,
       "recall": 1.0,
@@ -361,15 +515,93 @@
       "success": true
     },
     {
-      "query": "как загрузить показатели из файла",
-      "source": "instruction.pdf, страница 19",
+      "query": "где найти выполнение входного контроля",
+      "source": "instruction.pdf, страница 101",
       "source_pdf": "instruction.pdf",
       "expected_pdf": "instruction.pdf",
       "pdf_ok": true,
-      "source_page": 19,
-      "targets": [],
+      "source_page": 101,
+      "targets": [
+        "Входной контроль",
+        "Найти"
+      ],
       "expected": [
-        "Загрузить из файла"
+        "Выполнения входного контроля"
+      ],
+      "found": [
+        "Входной контроль"
+      ],
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
+      "hit_at_1": false,
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
+    },
+    {
+      "query": "где находится статус контроля",
+      "source": "instruction.pdf, страница 101",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 101,
+      "targets": [
+        "Входной контроль"
+      ],
+      "expected": [
+        "Статус контроля"
+      ],
+      "found": [
+        "Входной контроль"
+      ],
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
+      "hit_at_1": false,
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
+    },
+    {
+      "query": "где указать номер плавки",
+      "source": "instruction.pdf, страница 9",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 9,
+      "targets": [
+        "Входной контроль"
+      ],
+      "expected": [
+        "Номер плавки"
+      ],
+      "found": [
+        "Входной контроль"
+      ],
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
+      "hit_at_1": false,
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
+    },
+    {
+      "query": "где указать сертификат",
+      "source": "services_1c.pdf, страница 175",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": false,
+      "source_page": 175,
+      "targets": [
+        "Входной контроль"
+      ],
+      "expected": [
+        "Сертификат"
       ],
       "found": [],
       "precision": 0.0,
@@ -382,6 +614,38 @@
       "success": false
     },
     {
+      "query": "как создать заказ на перемещение",
+      "source": "instruction.pdf, страница 118",
+      "source_pdf": "instruction.pdf",
+      "expected_pdf": "instruction.pdf",
+      "pdf_ok": true,
+      "source_page": 118,
+      "targets": [
+        "Склад и доставка",
+        "Создать",
+        "Заказы на перемещение",
+        "Создать заказ на перемещение"
+      ],
+      "expected": [
+        "Заказы на перемещение",
+        "Создать заказ на перемещение"
+      ],
+      "found": [
+        "Создать",
+        "Создать",
+        "Зарплата Заказы на перемещение Зоны доставки курьеров",
+        "Заказы на перемещение"
+      ],
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "mrr": 1.0,
+      "hit_at_1": true,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
       "query": "где найти монитор интернет поддержки",
       "source": "services_1c.pdf, страница 188",
       "source_pdf": "services_1c.pdf",
@@ -389,19 +653,23 @@
       "pdf_ok": true,
       "source_page": 188,
       "targets": [
-        "Монитор Интернет-поддержки"
+        "Монитор Интернет-поддержки",
+        "Интернет-поддержка пользователей",
+        "Найти"
       ],
       "expected": [
         "Монитор Интернет-поддержки"
       ],
       "found": [
-        "Монитор Интернет-поддержки"
+        "Интернет-поддержка пользователей",
+        "Монитор Интернет-поддержки",
+        "Настойки сбединения € Серверам"
       ],
-      "precision": 1.0,
+      "precision": 0.3333,
       "recall": 1.0,
-      "f1": 1.0,
-      "mrr": 1.0,
-      "hit_at_1": true,
+      "f1": 0.5,
+      "mrr": 0.5,
+      "hit_at_1": false,
       "hit_at_3": true,
       "hit_at_5": true,
       "success": true
@@ -415,8 +683,7 @@
       "source_page": 188,
       "targets": [
         "Интернет-поддержка пользователей",
-        "Подключить интернет-поддержку",
-        "Подключить Интернет-поддержку"
+        "Подключить интернет-поддержку"
       ],
       "expected": [
         "Интернет-поддержка пользователей",
@@ -429,6 +696,35 @@
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0,
+      "mrr": 1.0,
+      "hit_at_1": true,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "где найти интернет поддержку пользователей",
+      "source": "services_1c.pdf, страница 188",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 188,
+      "targets": [
+        "Интернет-поддержка пользователей",
+        "Подключить интернет-поддержку",
+        "Найти"
+      ],
+      "expected": [
+        "Интернет-поддержка пользователей"
+      ],
+      "found": [
+        "Интернет-поддержка пользователей",
+        "Подключить Интернет-поддержку",
+        "Настройки Интернет-поддерхки пользователей"
+      ],
+      "precision": 0.3333,
+      "recall": 1.0,
+      "f1": 0.5,
       "mrr": 1.0,
       "hit_at_1": true,
       "hit_at_3": true,
@@ -447,8 +743,7 @@
         "Создать",
         "ИНН",
         "Начните отсюда",
-        "Заполнить",
-        "Контрагент"
+        "Заполнить"
       ],
       "expected": [
         "Контрагенты",
@@ -458,15 +753,80 @@
       "found": [
         "Контрагент (сотдан =",
         "Контрагенты",
-        "Контрагенты Контрагенты Контрагенты Контрагенты",
         "ИНн",
         "Создать",
         "Проверить заполнение"
       ],
-      "precision": 0.6667,
+      "precision": 0.6,
       "recall": 1.0,
-      "f1": 0.8,
+      "f1": 0.75,
       "mrr": 0.5,
+      "hit_at_1": false,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "где найти контрагентов",
+      "source": "services_1c.pdf, страница 22",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 22,
+      "targets": [
+        "Контрагенты",
+        "Создать",
+        "ИНН",
+        "Начните отсюда",
+        "Заполнить",
+        "Найти"
+      ],
+      "expected": [
+        "Контрагенты"
+      ],
+      "found": [
+        "Контрагент (сотдан =",
+        "Контрагент (создан \"0)",
+        "Контрагенты",
+        "ИНн",
+        "аши"
+      ],
+      "precision": 0.2,
+      "recall": 1.0,
+      "f1": 0.3333,
+      "mrr": 0.3333,
+      "hit_at_1": false,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "где открыть справочник контрагентов",
+      "source": "services_1c.pdf, страница 22",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 22,
+      "targets": [
+        "Контрагенты",
+        "Создать",
+        "ИНН",
+        "Начните отсюда",
+        "Заполнить"
+      ],
+      "expected": [
+        "Контрагенты"
+      ],
+      "found": [
+        "Контрагент (сотдан =",
+        "Контрагент (создан \"0)",
+        "Контрагенты",
+        "ИНн"
+      ],
+      "precision": 0.25,
+      "recall": 1.0,
+      "f1": 0.4,
+      "mrr": 0.3333,
       "hit_at_1": false,
       "hit_at_3": true,
       "hit_at_5": true,
@@ -501,6 +861,38 @@
       "success": true
     },
     {
+      "query": "где находится поле инн контрагента",
+      "source": "services_1c.pdf, страница 22",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 22,
+      "targets": [
+        "Контрагенты",
+        "Создать",
+        "ИНН",
+        "Начните отсюда",
+        "Заполнить"
+      ],
+      "expected": [
+        "ИНН"
+      ],
+      "found": [
+        "Контрагент (сотдан =",
+        "Контрагенты",
+        "ИНн",
+        "Создать"
+      ],
+      "precision": 0.25,
+      "recall": 1.0,
+      "f1": 0.4,
+      "mrr": 0.3333,
+      "hit_at_1": false,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
       "query": "как заполнить контрагента по инн",
       "source": "services_1c.pdf, страница 22",
       "source_pdf": "services_1c.pdf",
@@ -512,8 +904,7 @@
         "Создать",
         "ИНН",
         "Начните отсюда",
-        "Заполнить",
-        "Контрагент"
+        "Заполнить"
       ],
       "expected": [
         "Контрагенты",
@@ -523,13 +914,46 @@
       "found": [
         "Контрагент (сотдан =",
         "Контрагенты",
-        "Контрагенты Контрагенты Контрагенты Контрагенты",
         "ИНн",
         "Создать"
       ],
-      "precision": 0.8,
+      "precision": 0.75,
       "recall": 1.0,
-      "f1": 0.8889,
+      "f1": 0.8571,
+      "mrr": 0.5,
+      "hit_at_1": false,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "как заполнить реквизиты контрагента по инн",
+      "source": "services_1c.pdf, страница 22",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 22,
+      "targets": [
+        "Контрагенты",
+        "Создать",
+        "ИНН",
+        "Начните отсюда",
+        "Заполнить"
+      ],
+      "expected": [
+        "Контрагенты",
+        "Создать",
+        "ИНН"
+      ],
+      "found": [
+        "Контрагент (сотдан =",
+        "Контрагенты",
+        "ИНн",
+        "Создать"
+      ],
+      "precision": 0.75,
+      "recall": 1.0,
+      "f1": 0.8571,
       "mrr": 0.5,
       "hit_at_1": false,
       "hit_at_3": true,
@@ -548,9 +972,7 @@
         "Создать",
         "ИНН",
         "Начните отсюда",
-        "Заполнить",
-        "Контрагент",
-        "Досье контрагента"
+        "Заполнить"
       ],
       "expected": [
         "Досье контрагента"
@@ -558,19 +980,17 @@
       "found": [
         "Контрагент (сотдан =",
         "Контрагент (создан \"0)",
-        "Досье контрагента",
         "Контрагенты",
-        "Контрагенты Контрагенты Контрагенты Контрагенты",
         "ИНн"
       ],
-      "precision": 0.1667,
-      "recall": 1.0,
-      "f1": 0.2857,
-      "mrr": 0.3333,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "mrr": 0.0,
       "hit_at_1": false,
-      "hit_at_3": true,
-      "hit_at_5": true,
-      "success": true
+      "hit_at_3": false,
+      "hit_at_5": false,
+      "success": false
     },
     {
       "query": "как создать организацию",
@@ -584,8 +1004,7 @@
         "Создать",
         "ИНН",
         "Начните отсюда",
-        "Заполнить",
-        "Организация"
+        "Заполнить"
       ],
       "expected": [
         "Организации",
@@ -595,12 +1014,11 @@
         "Контрагент (сотдан =",
         "ИНн",
         "Создать",
-        "Организация создание)",
         "Ции"
       ],
-      "precision": 0.4,
+      "precision": 0.5,
       "recall": 1.0,
-      "f1": 0.5714,
+      "f1": 0.6667,
       "mrr": 0.3333,
       "hit_at_1": false,
       "hit_at_3": true,
@@ -640,6 +1058,40 @@
       "success": true
     },
     {
+      "query": "где найти организации",
+      "source": "services_1c.pdf, страница 20",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 20,
+      "targets": [
+        "Организации",
+        "Создать",
+        "ИНН",
+        "Начните отсюда",
+        "Заполнить",
+        "Найти"
+      ],
+      "expected": [
+        "Организации"
+      ],
+      "found": [
+        "Контрагент (сотдан =",
+        "Контрагент (создан \"0)",
+        "ИНН",
+        "НАСИПЕК 000 НАСИПЕК 000 Префмкс Префмкс",
+        "Ции"
+      ],
+      "precision": 0.2,
+      "recall": 1.0,
+      "f1": 0.3333,
+      "mrr": 0.2,
+      "hit_at_1": false,
+      "hit_at_3": false,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
       "query": "как подключить 1с эдо",
       "source": "services_1c.pdf, страница 179",
       "source_pdf": "services_1c.pdf",
@@ -673,19 +1125,21 @@
       "source_page": 35,
       "targets": [
         "Контрагенты",
-        "1СПАРК Риски"
+        "1СПАРК Риски",
+        "Найти"
       ],
       "expected": [
         "1СПАРК Риски"
       ],
       "found": [
         "Контрагенты",
+        "нейранной сети",
         "1СПАРК Риски"
       ],
-      "precision": 0.5,
+      "precision": 0.3333,
       "recall": 1.0,
-      "f1": 0.6667,
-      "mrr": 0.5,
+      "f1": 0.5,
+      "mrr": 0.3333,
       "hit_at_1": false,
       "hit_at_3": true,
       "hit_at_5": true,
@@ -717,109 +1171,18 @@
       "success": true
     },
     {
-      "query": "что такое система компоновки данных",
-      "source": "reports_book.pdf, страница 184",
-      "source_pdf": "reports_book.pdf",
-      "expected_pdf": "reports_book.pdf",
-      "pdf_ok": true,
-      "source_page": 184,
-      "targets": [
-        "Система компоновки данных"
-      ],
-      "expected": [
-        "Система компоновки данных"
-      ],
-      "found": [],
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0,
-      "mrr": 0.0,
-      "hit_at_1": false,
-      "hit_at_3": false,
-      "hit_at_5": false,
-      "success": false
-    },
-    {
-      "query": "где описаны наборы данных",
-      "source": "reports_book.pdf, страница 329",
-      "source_pdf": "reports_book.pdf",
-      "expected_pdf": "reports_book.pdf",
-      "pdf_ok": true,
-      "source_page": 329,
-      "targets": [
-        "Наборы данных"
-      ],
-      "expected": [
-        "Наборы данных"
-      ],
-      "found": [],
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0,
-      "mrr": 0.0,
-      "hit_at_1": false,
-      "hit_at_3": false,
-      "hit_at_5": false,
-      "success": false
-    },
-    {
-      "query": "как настроить отбор в отчете",
-      "source": "reports_book.pdf, страница 11",
-      "source_pdf": "reports_book.pdf",
-      "expected_pdf": "reports_book.pdf",
-      "pdf_ok": true,
-      "source_page": 11,
-      "targets": [
-        "Отбор"
-      ],
-      "expected": [
-        "Отбор"
-      ],
-      "found": [],
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0,
-      "mrr": 0.0,
-      "hit_at_1": false,
-      "hit_at_3": false,
-      "hit_at_5": false,
-      "success": false
-    },
-    {
-      "query": "где найти вычисляемые поля",
-      "source": "reports_book.pdf, страница 5",
-      "source_pdf": "reports_book.pdf",
-      "expected_pdf": "reports_book.pdf",
-      "pdf_ok": true,
-      "source_page": 5,
-      "targets": [
-        "Вычисляемые поля"
-      ],
-      "expected": [
-        "Вычисляемые поля"
-      ],
-      "found": [],
-      "precision": 0.0,
-      "recall": 0.0,
-      "f1": 0.0,
-      "mrr": 0.0,
-      "hit_at_1": false,
-      "hit_at_3": false,
-      "hit_at_5": false,
-      "success": false
-    },
-    {
-      "query": "как настроить группировку",
-      "source": "services_1c.pdf, страница 49",
+      "query": "где найти директбанк",
+      "source": "services_1c.pdf, страница 6",
       "source_pdf": "services_1c.pdf",
-      "expected_pdf": "reports_book.pdf",
-      "pdf_ok": false,
-      "source_page": 49,
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 6,
       "targets": [
-        "Контрагенты"
+        "1С:ДиректБанк",
+        "Найти"
       ],
       "expected": [
-        "Группировка"
+        "1С:ДиректБанк"
       ],
       "found": [],
       "precision": 0.0,
@@ -832,19 +1195,58 @@
       "success": false
     },
     {
-      "query": "где находится конструктор запроса",
-      "source": "reports_book.pdf, страница 48",
-      "source_pdf": "reports_book.pdf",
-      "expected_pdf": "reports_book.pdf",
+      "query": "где найти 1с отчетность",
+      "source": "services_1c.pdf, страница 118",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
       "pdf_ok": true,
-      "source_page": 48,
+      "source_page": 118,
       "targets": [
-        "Конструктор запроса"
+        "1С-Отчетность",
+        "Система компоновки данных",
+        "Найти"
       ],
       "expected": [
-        "Конструктор запроса"
+        "1С-Отчетность"
       ],
-      "found": [],
+      "found": [
+        "Отчетность",
+        "плэтаак натолт"
+      ],
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.6667,
+      "mrr": 1.0,
+      "hit_at_1": true,
+      "hit_at_3": true,
+      "hit_at_5": true,
+      "success": true
+    },
+    {
+      "query": "где найти сервис 1с контрагент",
+      "source": "services_1c.pdf, страница 22",
+      "source_pdf": "services_1c.pdf",
+      "expected_pdf": "services_1c.pdf",
+      "pdf_ok": true,
+      "source_page": 22,
+      "targets": [
+        "Контрагенты",
+        "Создать",
+        "ИНН",
+        "Начните отсюда",
+        "Заполнить",
+        "Найти"
+      ],
+      "expected": [
+        "1С:Контрагент"
+      ],
+      "found": [
+        "Контрагент (сотдан =",
+        "Контрагент (создан \"0)",
+        "Контрагенты",
+        "ИНН",
+        "аши аши шдАшшшкшшышшн шдАшшшкшшышшн"
+      ],
       "precision": 0.0,
       "recall": 0.0,
       "f1": 0.0,
