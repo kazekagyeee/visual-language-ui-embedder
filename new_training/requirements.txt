@@ -1,0 +1,5 @@
+PyMuPDF
+easyocr
+opencv-python-headless
+sentence-transformers
+tqdm
