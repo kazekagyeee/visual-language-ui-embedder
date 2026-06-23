@@ -149,7 +149,7 @@ class UIEmbedderConfig:
     max_token_length: int = 512
 
     # ---- Model identity ----
-    model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"
+    model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"
 
     # ---- LLM dimensions (derived from model_name preset) ----
     llm_dim: int = 3584
